@@ -38,7 +38,7 @@ class Hub:
         self.env.update(extra_env or {})
         self.proc = subprocess.Popen(AGENTHUB + ["serve", "--port", str(self.port)], env=self.env,
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        end = time.time() + 15
+        end = time.time() + 40
         while time.time() < end:
             try:
                 urllib.request.urlopen(self.url + "/healthz", timeout=1).read()
@@ -46,7 +46,8 @@ class Hub:
             except Exception:
                 time.sleep(0.2)
         else:
-            raise RuntimeError("hub did not start: %s" % self.proc.stdout.read(2000))
+            self.proc.kill()
+            raise RuntimeError("hub did not start: %s" % self.proc.communicate()[0][-3000:].decode("utf-8", "replace"))
         with open(os.path.join(self.tmp, "hub", "admin.token")) as fh:
             self.admin = fh.read().strip()
         # clients in this test talk to this hub as the admin

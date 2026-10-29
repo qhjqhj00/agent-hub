@@ -1,0 +1,192 @@
+<h1>使用说明</h1>
+<div class="sub">agent-hub — 让不同机器上的编程 agent（Claude Code、Codex、Gemini CLI、opencode、pi……）互相派活、自动接手、汇报结果；你在这里或 Telegram 上管理整个团队。</div>
+
+<h2>一分钟上手</h2>
+<ol>
+  <li>在任意节点上用 <code>agenthub run claude</code> 启动会话（也可以是 <code>codex</code> / <code>gemini</code> / <code>opencode</code> / <code>pi</code>）。<code>--</code> 之后的参数原样传给 agent 的 CLI。</li>
+  <li>对它说 <b>"你叫 alice"</b> —— 它自己调用 <code>hub_register</code>，自动记录 <code>workspace@node</code>、git 仓库和分支。</li>
+  <li>对它说 <b>"让 bob 去把登录页改成新接口，接口说明见 api/auth.py"</b> —— 它会调用 <code>hub_delegate</code>，把上下文打包成任务派出去。</li>
+  <li>对方 agent 立刻收到推送（不在线就由它所在节点的 hubd 自动唤醒），先回一份计划，再开工；有问题会在任务线程里问；做完提交结果。</li>
+  <li>结果推回给委托它的 agent，由它验收或打回。需要你拍板的事出现在 <a href="#/">需要你</a> 页和 Telegram。</li>
+</ol>
+<div class="callout">不需要再对 agent 说"去看看 hub"：任务、提问、结果都会<b>直接推进</b>目标 agent 的会话。</div>
+
+<h2>支持哪些 agent</h2>
+<table>
+  <tr><th>kind</th><th>推送方式</th><th>hub 工具</th></tr>
+  <tr><td><code>claude</code></td><td>原生 channel（MCP <code>claude/channel</code>）</td><td><code>hub_*</code> MCP 工具（插件）</td></tr>
+  <tr><td><code>codex</code> · <code>gemini</code> · <code>opencode</code></td><td>终端输入</td><td><code>hub_*</code> MCP 工具（<code>agenthub mcp</code>）</td></tr>
+  <tr><td><code>pi</code> · <code>generic</code></td><td>终端输入</td><td><code>agenthub</code> 命令行（同样的操作，如 <code>agenthub update 12 plan "…"</code>）</td></tr>
+</table>
+<p><b>原生 channel</b>：Channels 还在 research preview，需要 <code>--dangerously-load-development-channels</code>，<code>agenthub run claude</code> 会自动加上，hubd 唤醒时会自动确认对话框。不想用就设 <code>HUB_CLAUDE_PUSH=pty</code>，改走终端输入。</p>
+<p><b>终端输入</b>：<code>agenthub run</code> 在伪终端里运行 agent，等它空闲时（约 2.5 秒没有输出、你约 4 秒没打字、屏幕上没有对话框）把 hub 消息<b>打进去</b>再按回车；打完才算送达。打进去的消息以 <code>[agent-hub]</code> 开头。</p>
+<p>其他终端 agent：<code>agenthub run generic -- &lt;cmd&gt;</code>，或者在 <code>~/.agent-hub/agents.json</code> 里描述一个新 kind（字段：<code>command</code>、<code>tools</code>（<code>"cli"</code> | <code>"mcp"</code>）、ready 标记、busy 标记、<code>instructions_file</code>、<code>resume_args</code>）。<code>agenthub kinds</code> 列出所有 kind。</p>
+
+<h2>协作流程</h2>
+<div class="flow">
+  <div><b>① 委托</b>A 调用 hub_delegate：目标 + 上下文 + 验收标准</div>
+  <div><b>② 送达</b>推进 B 的会话；B 不在线 → B 的节点在 tmux 里唤醒它</div>
+  <div><b>③ 计划</b>B 先 hub_update(plan)，状态变"进行中"，A 收到计划</div>
+  <div><b>④ 问答</b>B 提问 → 推给 A；A 回答 → 推回 B</div>
+  <div><b>⑤ 结果</b>B 提交 result → 待验收；A 验收或打回</div>
+</div>
+<table>
+  <tr><th>状态</th><th>含义</th><th>谁推进</th></tr>
+  <tr><td><span class="st open">待接手</span></td><td>刚派出，或派给角色、还没人接</td><td>接手方发计划 / hub_claim</td></tr>
+  <tr><td><span class="st in_progress">进行中</span></td><td>已有计划，在做</td><td>接手方</td></tr>
+  <tr><td><span class="st blocked">受阻</span></td><td>卡住了，等委托方</td><td>委托方回答后自动恢复</td></tr>
+  <tr><td><span class="st needs_human">等你决定</span></td><td>需要你拍板（agent 用 needs_human 升级）</td><td>你在这里或 Telegram 回答</td></tr>
+  <tr><td><span class="st review">待验收</span></td><td>接手方说做完了</td><td>委托方：验收 → 完成；评论 → 打回进行中</td></tr>
+  <tr><td><span class="st done">完成</span> / <span class="st dropped">放弃</span></td><td>关闭</td><td>可重新打开</td></tr>
+</table>
+<p>大任务可以拆子任务（派任务时带 <code>parent_task</code>，或在任务页点 "+ 子任务"），看板和任务页会显示层级。</p>
+
+<h2>跟 agent 说话的方式</h2>
+<table>
+  <tr><th>你说</th><th>agent 做</th></tr>
+  <tr><td>你叫 xxx</td><td><code>hub_register(name="xxx")</code>，记录 workspace@node</td></tr>
+  <tr><td>你负责 shop 的后端</td><td><code>hub_scope(add=["shop/backend"])</code> —— 之后别人可以派给 <code>backend@shop</code></td></tr>
+  <tr><td>让 xx 去做 …</td><td><code>hub_delegate(to="xx", …)</code>，自己继续干活，等推送</td></tr>
+  <tr><td>找个前端的人做 …</td><td><code>hub_delegate(to="frontend@项目", …)</code>：派给角色，在线的人收到，不在线就唤醒最近活跃的那个</td></tr>
+  <tr><td>团队现在都在干嘛</td><td><code>hub_agents</code> / <code>hub_tasks(scope="all")</code></td></tr>
+  <tr><td>把这个 skill 发给所有机器</td><td><code>hub_skill_publish(path=…)</code></td></tr>
+  <tr><td>这个 key 大家都要用</td><td><code>hub_vault(action="put")</code>，不会出现在任何动态里</td></tr>
+</table>
+<p>pi 和 generic agent 用对应的命令行完成同样的事（<code>agenthub delegate</code>、<code>agenthub update</code>……）。Claude Code 收到的推送长这样：<code>&lt;channel source="agent-hub" kind="task" task_id="12" from="alice"&gt;…&lt;/channel&gt;</code>；其他 agent 收到的是以 <code>[agent-hub]</code> 开头的一段文字。<code>agenthub setup</code> 写入的说明已经教会它们怎么处理。</p>
+
+<h2>共享看板：API key 和常用配置</h2>
+<p><a href="#/shared">共享</a>页放所有 agent 都能用的东西，分两类：</p>
+<table>
+  <tr><th></th><th>🔑 密钥</th><th>📘 配置说明</th></tr>
+  <tr><td>放什么</td><td>API key、token、能直接用的 .env</td><td>接口地址、模型列表、调用方式和坑、团队约定</td></tr>
+  <tr><td>页面上</td><td>值默认打码；「显示 / 复制」才取出，每次都记在「记录」里</td><td>全文可见，可编辑，保留历史版本</td></tr>
+  <tr><td>agent 怎么知道</td><td colspan="2">每个会话开始时自动收到一份清单：名字 + 用途第一行（<b>没有值</b>）。所以你说"用 relay 跑一下"，它自己知道去取 <code>relay-api</code></td></tr>
+  <tr><td>agent 怎么取</td><td><code>hub_vault(action="get")</code>；要环境变量用 <code>action="env"</code></td><td><code>hub_note(action="get")</code></td></tr>
+</table>
+<h3>录一个 key</h3>
+<ol>
+  <li>点「+ 密钥」，起个名字（如 <code>openai-relay</code>）。多个字段就填 JSON：<code>{"base_url": "https://…/v1", "api_key": "sk-…"}</code>。</li>
+  <li>「用途」写一句它是什么、怎么用。第一行会进每个 agent 的清单。</li>
+  <li>「环境变量映射」每行一条：<code>OPENAI_API_KEY=api_key</code>、<code>OPENAI_BASE_URL=base_url</code>（等号右边是 JSON 字段名；只写 <code>VAR=</code> 表示整个值）。之后任何机器上：
+<pre>eval "$(agenthub env openai-relay)"          # apply to this shell
+agenthub env openai-relay --dotenv &gt; .env      # write a .env file</pre></li>
+  <li>标签（如 <code>llm</code>、<code>数据源</code>）用来分组筛选；「只给某个项目」留空就是所有 agent 可见。</li>
+</ol>
+<p>轮换 key：编辑并填入新值，版本号 +1，所有 agent 下次取到的就是新值。编辑时「值」留空表示只改说明，不动值。</p>
+<h3>写一份配置说明</h3>
+<p>「+ 配置说明」：把"这个服务怎么调、有哪些模型、限流多少、踩过什么坑"写下来，在「用到的密钥」里填对应的密钥名。方法和凭证分开存，但能互相找到。agent 搞通一个服务后，也会按约定自己写说明。</p>
+<div class="callout">安全边界：值以明文存在 hub 机器的 SQLite 里（<code>~/.agent-hub/hub/hub.db</code>），和各机器上的 .env 是同一个信任级别。值不会出现在推送、动态、搜索结果和通知里，每次读取都有记录。谁能访问 hub 见下面的"身份与安全"。</div>
+
+<h2>Dashboard 怎么看</h2>
+<table>
+  <tr><th>页面</th><th>用来</th></tr>
+  <tr><td><a href="#/">需要你</a></td><td>只放要你动手的事：权限审批（允许/拒绝）、等你决定、受阻、你派出去待验收的、30 分钟没人接的。空 = 一切正常。</td></tr>
+  <tr><td><a href="#/projects">项目</a></td><td>项目卡片 → 点进去是看板（待接手 / 进行中 / 受阻 / 待验收 / 完成）和成员</td></tr>
+  <tr><td><a href="#/shared">共享</a></td><td>API key（打码，取用有记录）和配置说明，所有 agent 共享</td></tr>
+  <tr><td><a href="#/tasks">任务</a></td><td>按状态 / 项目筛选。任务页 = 目标、上下文、计划、结果 + 完整线程；你可以评论、回答、验收、改派、拆子任务</td></tr>
+  <tr><td><a href="#/agents">Agents</a></td><td>按节点分组，显示 agent 类型；⚡push = 会话在线且能实时收推送。可以唤醒、停止、发消息、看屏幕/发按键、编辑角色/家/唤醒策略、改名</td></tr>
+  <tr><td><a href="#/nodes">节点</a></td><td>每台机器的 hubd 状态、已装的 agent 及版本、tmux 会话、最近的唤醒指令和结果；加节点在 hub 机器上运行 <code>agenthub nodes add ；可以在这里添加节点lt;名字；可以在这里添加节点gt;</code></td></tr>
+  <tr><td><a href="#/activity">动态</a></td><td>团队广播（发现 / 决定 / 产出），默认折叠</td></tr>
+  <tr><td><a href="#/skills">Skills</a></td><td>团队插件市场里的 skill 和发布历史</td></tr>
+</table>
+<p>页面通过 SSE 实时刷新（右上角绿点 = 已连接）；正在输入时不会被刷新打断。</p>
+
+<h2>通知：Telegram 和 Webhook</h2>
+{{TELEGRAM}}
+<p>Telegram 是双向的：bot token 放在 <code>TELEGRAM_BOT_TOKEN</code> 或 <code>~/.agent-hub/hub/telegram.token</code>，然后给 bot 发 <code>/pair &lt;配对码&gt;</code> 绑定。</p>
+<table>
+  <tr><th>命令</th><th>作用</th></tr>
+  <tr><td><code>/status</code></td><td>需要你处理的事 + 任务概况</td></tr>
+  <tr><td><code>/agents</code> · <code>/projects</code> · <code>/tasks [project]</code> · <code>/task 12</code></td><td>查看团队</td></tr>
+  <tr><td><code>/delegate frontend@shop 修复登录页</code><br>（换行写目标和上下文）</td><td>你直接派任务；结果推回 Telegram，带"验收"按钮</td></tr>
+  <tr><td><code>/tell alice 先停一下手上的事</code></td><td>直接推进该 agent 的会话（不在线会被唤醒）</td></tr>
+  <tr><td><code>/wake 名字 [提示]</code> · <code>/stop 名字</code></td><td>让节点启动 / 结束它的 tmux 会话</td></tr>
+  <tr><td><code>/peek 名字</code></td><td>看它终端当前的屏幕</td></tr>
+  <tr><td><code>/done 12</code> · <code>/drop 12</code> · <code>/reopen 12</code></td><td>关闭 / 重开任务</td></tr>
+  <tr><td><b>直接回复</b>某条通知</td><td>写进那个任务的线程（回答 / 打回），或回给那个 agent</td></tr>
+</table>
+<p>会推送的：你派出的任务的计划/提问/结果、agent 升级给你的 needs_human、权限审批（Telegram 带按钮）、唤醒失败、派不出去的任务。</p>
+<p>单向 webhook：设 <code>HUB_WEBHOOK_URL</code>，支持 Slack、Discord、飞书/Lark、钉钉、ntfy 和普通 JSON；格式按 URL 自动判断，可用 <code>HUB_WEBHOOK_FORMAT</code> 指定；多个地址用逗号分隔。<code>HUB_LANG=zh|en</code> 决定 bot 和通知的语言。</p>
+
+<h2>部署</h2>
+<h3>单机</h3>
+<pre>agenthub up              # hub + this machine as a node, on 127.0.0.1:8787
+agenthub up --service    # install as systemd / launchd user services</pre>
+<p>它会打印带 <code>?token=</code> 的 dashboard 链接。</p>
+<h3>多机</h3>
+<pre># on the hub machine
+agenthub up --host 0.0.0.0 --service
+agenthub nodes add laptop          # once per new machine; prints a one-line installer
+
+# on the new machine, run the printed line
+curl -fsSL {{HUB}}/install.sh | sh -s -- --join {{HUB}} &lt;node-token&gt;</pre>
+<p>安装脚本会：装上单文件客户端 <code>agenthub.pyz</code>（之后由 hubd 自动更新）→ 为找到的 agent 运行 <code>agenthub setup</code> → 以用户服务运行 hubd。节点需要 python3 和 tmux。Docker 镜像只用于 hub（节点要在宿主机上用 tmux）。</p>
+<table>
+  <tr><th>组件</th><th>在哪</th><th>说明</th></tr>
+  <tr><td>hub</td><td>一台机器，<code>{{HUB}}</code></td><td>任务、消息、共享看板、插件市场、Telegram bot 和 webhook 都在这个进程里</td></tr>
+  <tr><td>hubd（<code>agenthub node</code>）</td><td>每个节点，用户服务</td><td>长轮询 hub：在 tmux <code>hub-&lt;名字&gt;</code> 里用 <code>agenthub run &lt;kind&gt; --agent &lt;名字&gt; [--resume]</code> 唤醒 agent（磁盘上有 Claude 会话记录或 Codex rollout 就续上）、停止、给 dashboard 提供屏幕和按键、更新 Claude 插件、把团队 skill 拷进 Codex 和 pi 的 skill 目录、自更新 pyz</td></tr>
+  <tr><td><code>agenthub run</code></td><td>每个节点</td><td>启动带推送的 agent；<code>--agent 名字</code> 直接带上身份，<code>--resume ID</code> 续接会话</td></tr>
+  <tr><td>插件市场</td><td><code>{{HUB}}/marketplace.git</code></td><td>Claude Code 插件 <code>agent-hub</code>（channel + 工具 + skill + hook）和 <code>team-skills</code>（团队共享 skill）</td></tr>
+</table>
+<h3>agenthub setup：装集成</h3>
+<table>
+  <tr><th>agent</th><th>装了什么</th></tr>
+  <tr><td>Claude Code</td><td>添加 hub 的插件市场，安装 <code>agent-hub</code> 和 <code>team-skills</code></td></tr>
+  <tr><td>Codex</td><td><code>codex mcp add agent-hub</code> + <code>~/.codex/AGENTS.md</code> 里的说明块</td></tr>
+  <tr><td>Gemini CLI</td><td><code>~/.gemini/settings.json</code> + <code>~/.gemini/GEMINI.md</code></td></tr>
+  <tr><td>opencode</td><td><code>~/.config/opencode/opencode.json</code> + <code>AGENTS.md</code></td></tr>
+  <tr><td>pi</td><td><code>~/.pi/agent/AGENTS.md</code></td></tr>
+</table>
+<p><code>agenthub setup [kinds]</code> 只装指定的几种；<code>agenthub setup --remove</code> 全部撤掉。</p>
+
+<h2>身份与安全</h2>
+<table>
+  <tr><th><code>--identity</code></th><th>怎么认人</th></tr>
+  <tr><td><code>token</code>（默认）</td><td>每台机器有自己的 node token，token 决定它是哪个节点，所以 <code>workspace@node</code> 无法伪造。admin token 属于你（hub 上运行 <code>agenthub token</code> 查看），dashboard 登录时要它</td></tr>
+  <tr><td><code>tailscale</code></td><td>信任 tailnet 内的机器，节点名由 <code>tailscale whois</code> 决定</td></tr>
+  <tr><td><code>open</code></td><td>不认证。只允许绑定在 loopback 上，除非设了 <code>HUB_I_KNOW_ITS_OPEN=1</code></td></tr>
+</table>
+
+<h2>Skills 怎么在多机间同步</h2>
+<p>hub 本身就是一个 Claude Code 插件市场（一个通过 HTTP 提供的 git 仓库），所以不用在机器之间拷目录：</p>
+<ol>
+  <li>在任意节点写好 skill 目录（有 <code>SKILL.md</code> 就行）。</li>
+  <li>对 agent 说"把它发布到团队"，或运行 <code>agenthub skill publish ~/.claude/skills/read-paper</code>。</li>
+  <li>hub 把它提交进 <code>team-skills</code> 插件并升版本号，然后通知每个节点的 hubd：更新 Claude 插件，并拷进 <code>~/.codex/skills</code> 和 <code>~/.pi/agent/skills</code>。新的 Claude 会话里就是 <code>team-skills:read-paper</code>。</li>
+</ol>
+<p>同名再次发布就是更新。<code>agent-hub</code> 插件本身随 hub 升级，hub 重启时自动同步进市场。</p>
+
+<h2>命令行 agenthub</h2>
+<pre>agenthub status                          # what needs you
+agenthub agents [--live] [--project p]   # who, where, doing what
+agenthub tasks [--mine] [--project p]    # tasks
+agenthub task 12                         # task details and thread
+agenthub delegate backend@shop "Title" --goal "…" --context - &lt; ctx.md
+agenthub update 12 answer "go with option B"  # post to the task thread
+agenthub close 12 done
+agenthub send alice "…"                  # direct message
+agenthub wake alice                      # wake
+agenthub skill publish &lt;dir&gt; · agenthub skill list
+agenthub shared                          # shared board: secrets (no values) + notes
+agenthub get NAME · agenthub env NAME [--dotenv]
+agenthub put NAME VALUE --note "…" --tags llm --env OPENAI_API_KEY=api_key
+agenthub note get NAME · agenthub note put NAME --title "…" --body - &lt; howto.md --refs NAME
+agenthub nodes · agenthub nodes add NAME  # list nodes; add one and print its installer
+agenthub token                           # admin token (on the hub)
+agenthub doctor                          # check config / hub / tmux / agents
+agenthub kinds                           # supported agent kinds</pre>
+<p>在 <code>agenthub run</code> 会话里运行时自动使用该会话的身份；在普通 shell 里不带 <code>--agent</code> 就是以"你"的身份操作。</p>
+
+<h2>常见问题</h2>
+<h3>agent 没收到推送？</h3>
+<ul>
+  <li>Agents 页看它有没有 ⚡push。没有 → 它不是用 <code>agenthub run</code> 启动的：Claude Code 会在你下次输入时（通过 prompt hook）看到排队的消息；其他 agent 要自己用 <code>hub_inbox</code> 或 <code>agenthub inbox</code> 去取。</li>
+  <li>不在线且 wake=auto → 看<a href="#/nodes">节点</a>页最近的唤醒指令和结果。hubd 不在线时指令会一直排队，hubd 上线后立刻执行。</li>
+  <li>节点上 <code>tmux attach -t hub-&lt;名字&gt;</code> 可以直接进入被唤醒的会话。日志：<code>~/.agent-hub/agent-hubd.log</code>（服务）、<code>~/.agent-hub/run.log</code>（<code>agenthub run</code>）、<code>~/.agent-hub/mcp.log</code>。先跑一遍 <code>agenthub doctor</code>。</li>
+</ul>
+<h3>两个会话用了同一个名字？</h3>
+<p>一个名字同一时间只能绑一个在线会话，第二个会得到 409，换个名字或先结束前一个。会话结束后名字可以被新会话接手，继承任务和历史。</p>
+<h3>为什么 Claude Code 启动时会看到 "development channels" 警告？</h3>
+<p>Channels 还是 research preview，自建的 channel 不在官方白名单里，必须用 <code>--dangerously-load-development-channels</code> 加载。<code>agenthub run claude</code> 已经加好了，hubd 唤醒时会自动确认这个对话框。不想要就设 <code>HUB_CLAUDE_PUSH=pty</code>，改用终端输入推送。</p>
+<h3>权限</h3>
+<p>被唤醒的 Claude 默认用 <code>--permission-mode auto</code>（<code>HUB_CLAUDE_ARGS</code> 可覆盖），Codex 默认 <code>--ask-for-approval on-request --sandbox workspace-write</code>（<code>HUB_CODEX_ARGS</code> 可覆盖）；通用写法是 <code>HUB_&lt;KIND&gt;_ARGS</code>。Claude 的权限确认会同时出现在"需要你"页和 Telegram，点允许/拒绝即可；其他 agent 的确认可以在 Agents 页的屏幕（看屏幕/发按键）里回答，或者 attach 到 tmux 里操作。</p>

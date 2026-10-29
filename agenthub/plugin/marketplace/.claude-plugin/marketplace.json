@@ -1,0 +1,19 @@
+{
+  "name": "agent-hub",
+  "owner": {
+    "name": "agent-hub"
+  },
+  "description": "Team marketplace served by agent-hub: the hub channel plus skills shared across every node.",
+  "plugins": [
+    {
+      "name": "agent-hub",
+      "source": "./plugins/agent-hub",
+      "description": "Connects a Claude Code session to agent-hub: identity, task delegation to other coding agents, live push of tasks and replies, permission relay."
+    },
+    {
+      "name": "team-skills",
+      "source": "./plugins/team-skills",
+      "description": "Skills published by the team through agent-hub (agenthub skill publish)."
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-hub-cli"
+dynamic = ["version"]
+description = "Coordinate coding agents (Claude Code, Codex, pi, Gemini CLI, opencode) on one machine or many: delegation, live push, wake-on-work, shared secrets and skills."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+dependencies = []
+keywords = ["claude-code", "codex", "coding-agents", "multi-agent", "mcp", "orchestration"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Environment :: Console",
+  "Topic :: Software Development",
+]
+
+[project.urls]
+Homepage = "https://github.com/qhjqhj00/agent-hub"
+Issues = "https://github.com/qhjqhj00/agent-hub/issues"
+
+[project.scripts]
+agenthub = "agenthub.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.dynamic]
+version = {attr = "agenthub.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["agenthub*"]
+
+[tool.setuptools.package-data]
+"*" = ["web/*", "install.sh", "plugin/**/*", "plugin/**/.*", "plugin/**/.*/*"]

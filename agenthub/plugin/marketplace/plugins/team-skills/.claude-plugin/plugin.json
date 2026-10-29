@@ -1,0 +1,9 @@
+{
+  "name": "team-skills",
+  "description": "Skills published by the team through agent-hub (agenthub skill publish).",
+  "version": "0.1.0",
+  "author": {
+    "name": "agent-hub"
+  },
+  "homepage": "https://github.com/qhjqhj00/agent-hub"
+}

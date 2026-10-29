@@ -1,0 +1,13 @@
+services:
+  hub:
+    build: .
+    ports: ["8787:8787"]
+    volumes: ["hub-data:/data"]
+    environment:
+      HUB_URL: http://localhost:8787          # the address nodes use to reach the hub
+      # HUB_LANG: zh
+      # TELEGRAM_BOT_TOKEN: ...
+      # HUB_WEBHOOK_URL: https://hooks.slack.com/services/...
+    restart: unless-stopped
+volumes:
+  hub-data:

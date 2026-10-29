@@ -1,0 +1,11 @@
+{
+  "description": "SessionStart: tell the hub MCP server which conversation /resume switched to. UserPromptSubmit: for sessions without push, show queued hub items.",
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "PATH=\"$HOME/.local/bin:$PATH\" agenthub cc-hook start", "timeout": 5 } ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "PATH=\"$HOME/.local/bin:$PATH\" agenthub cc-hook prompt", "timeout": 8 } ] }
+    ]
+  }
+}

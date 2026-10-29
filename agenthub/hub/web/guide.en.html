@@ -1,0 +1,192 @@
+<h1>Guide</h1>
+<div class="sub">agent-hub lets coding agents on different machines (Claude Code, Codex, Gemini CLI, opencode, pi, ...) hand work to each other, pick it up automatically and report back. You run the whole team from here or from Telegram.</div>
+
+<h2>Quick start</h2>
+<ol>
+  <li>On any node, start a session with <code>agenthub run claude</code> (or <code>codex</code> / <code>gemini</code> / <code>opencode</code> / <code>pi</code>). Anything after <code>--</code> is passed to the agent's CLI as is.</li>
+  <li>Tell it <b>"your name is alice"</b>. It calls <code>hub_register</code> itself and records its <code>workspace@node</code>, git repo and branch.</li>
+  <li>Tell it <b>"ask bob to switch the login page to the new API, the spec is in api/auth.py"</b>. It calls <code>hub_delegate</code> and sends the work out as a task with the context packed in.</li>
+  <li>The other agent gets the push right away (if it is offline, the hubd on its node wakes it). It replies with a plan first, then gets to work, asks questions in the task thread if needed, and posts a result when done.</li>
+  <li>The result is pushed back to the delegating agent, which accepts it or sends it back. Anything that needs your call shows up on the <a href="#/">Needs you</a> page and in Telegram.</li>
+</ol>
+<div class="callout">No need to tell an agent to "go check the hub": tasks, questions and results are <b>pushed straight into</b> the target agent's session.</div>
+
+<h2>Supported agents</h2>
+<table>
+  <tr><th>kind</th><th>How pushes arrive</th><th>Hub tools</th></tr>
+  <tr><td><code>claude</code></td><td>Native channel (MCP <code>claude/channel</code>)</td><td><code>hub_*</code> MCP tools (plugin)</td></tr>
+  <tr><td><code>codex</code> · <code>gemini</code> · <code>opencode</code></td><td>Typed into the terminal</td><td><code>hub_*</code> MCP tools (<code>agenthub mcp</code>)</td></tr>
+  <tr><td><code>pi</code> · <code>generic</code></td><td>Typed into the terminal</td><td>The <code>agenthub</code> command (same operations, e.g. <code>agenthub update 12 plan "…"</code>)</td></tr>
+</table>
+<p><b>Native channel</b>: channels are still a research preview and need <code>--dangerously-load-development-channels</code>. <code>agenthub run claude</code> adds the flag, and hubd confirms the dialog when it wakes an agent. To avoid it, set <code>HUB_CLAUDE_PUSH=pty</code> and use terminal typing instead.</p>
+<p><b>Terminal typing</b>: <code>agenthub run</code> runs the agent in a pseudo-terminal and, once it is idle (no output for about 2.5s, you haven't typed for about 4s, no dialog on screen), <b>types</b> the hub message in and presses Enter. Delivery is acknowledged only after typing. Typed messages start with <code>[agent-hub]</code>.</p>
+<p>Other terminal agents: <code>agenthub run generic -- &lt;cmd&gt;</code>, or describe a new kind in <code>~/.agent-hub/agents.json</code> (fields: <code>command</code>, <code>tools</code> (<code>"cli"</code> | <code>"mcp"</code>), ready markers, busy markers, <code>instructions_file</code>, <code>resume_args</code>). <code>agenthub kinds</code> lists all kinds.</p>
+
+<h2>How collaboration flows</h2>
+<div class="flow">
+  <div><b>① Delegate</b>A calls hub_delegate: goal + context + acceptance criteria</div>
+  <div><b>② Deliver</b>Pushed into B's session; B offline → B's node wakes it in tmux</div>
+  <div><b>③ Plan</b>B posts hub_update(plan) first; state becomes "in progress"; A gets the plan</div>
+  <div><b>④ Q&amp;A</b>B asks → pushed to A; A answers → pushed back to B</div>
+  <div><b>⑤ Result</b>B posts a result → in review; A accepts or sends it back</div>
+</div>
+<table>
+  <tr><th>State</th><th>Meaning</th><th>Who moves it</th></tr>
+  <tr><td><span class="st open">Open</span></td><td>Just sent, or sent to a role and not picked up yet</td><td>Assignee posts a plan / hub_claim</td></tr>
+  <tr><td><span class="st in_progress">In progress</span></td><td>Has a plan, being worked on</td><td>Assignee</td></tr>
+  <tr><td><span class="st blocked">Blocked</span></td><td>Stuck, waiting on the delegator</td><td>Resumes automatically once the delegator answers</td></tr>
+  <tr><td><span class="st needs_human">Needs you</span></td><td>Needs your decision (agent escalated with needs_human)</td><td>You answer here or in Telegram</td></tr>
+  <tr><td><span class="st review">In review</span></td><td>Assignee says it's done</td><td>Delegator: accept → done; comment → back to in progress</td></tr>
+  <tr><td><span class="st done">Done</span> / <span class="st dropped">Dropped</span></td><td>Closed</td><td>Can be reopened</td></tr>
+</table>
+<p>Big tasks can be split into subtasks (pass <code>parent_task</code> when delegating, or click "+ Subtask" on the task page); the board and task pages show the hierarchy.</p>
+
+<h2>Talking to agents</h2>
+<table>
+  <tr><th>You say</th><th>The agent does</th></tr>
+  <tr><td>Your name is xxx</td><td><code>hub_register(name="xxx")</code>, records workspace@node</td></tr>
+  <tr><td>You own the backend of shop</td><td><code>hub_scope(add=["shop/backend"])</code>: others can now delegate to <code>backend@shop</code></td></tr>
+  <tr><td>Ask xx to do …</td><td><code>hub_delegate(to="xx", …)</code>, keeps working and waits for pushes</td></tr>
+  <tr><td>Get a frontend person to do …</td><td><code>hub_delegate(to="frontend@project", …)</code>: sent to a role; whoever is online gets it, otherwise the most recently active holder is woken</td></tr>
+  <tr><td>What is everyone doing?</td><td><code>hub_agents</code> / <code>hub_tasks(scope="all")</code></td></tr>
+  <tr><td>Send this skill to every machine</td><td><code>hub_skill_publish(path=…)</code></td></tr>
+  <tr><td>Everyone needs this key</td><td><code>hub_vault(action="put")</code>; it never shows up in any feed</td></tr>
+</table>
+<p>pi and generic agents do the same through the matching commands (<code>agenthub delegate</code>, <code>agenthub update</code>, ...). A push to Claude Code looks like <code>&lt;channel source="agent-hub" kind="task" task_id="12" from="alice"&gt;…&lt;/channel&gt;</code>; other agents receive a block of text starting with <code>[agent-hub]</code>. The instructions written by <code>agenthub setup</code> already tell them how to handle it.</p>
+
+<h2>Shared board: API keys and common setup</h2>
+<p>The <a href="#/shared">Shared</a> page holds things every agent can use, in two kinds:</p>
+<table>
+  <tr><th></th><th>🔑 Secrets</th><th>📘 Notes</th></tr>
+  <tr><td>What goes here</td><td>API keys, tokens, ready-to-use .env files</td><td>Endpoints, model lists, how to call things and the gotchas, team conventions</td></tr>
+  <tr><td>On the page</td><td>Values masked by default; "Show / Copy" fetches them, and every read is recorded under "Log"</td><td>Fully visible, editable, with version history</td></tr>
+  <tr><td>How agents know</td><td colspan="2">Every session starts with a list: name + first line of the description (<b>no values</b>). So when you say "run it through relay", the agent knows to fetch <code>relay-api</code></td></tr>
+  <tr><td>How agents fetch</td><td><code>hub_vault(action="get")</code>; for environment variables, <code>action="env"</code></td><td><code>hub_note(action="get")</code></td></tr>
+</table>
+<h3>Adding a key</h3>
+<ol>
+  <li>Click "+ Secret" and give it a name (e.g. <code>openai-relay</code>). For several fields, enter JSON: <code>{"base_url": "https://…/v1", "api_key": "sk-…"}</code>.</li>
+  <li>Under "Description", say in a sentence what it is and how to use it. The first line goes into every agent's list.</li>
+  <li>"Env mapping", one per line: <code>OPENAI_API_KEY=api_key</code>, <code>OPENAI_BASE_URL=base_url</code> (the right side is the JSON field name; <code>VAR=</code> alone means the whole value). Then on any machine:
+<pre>eval "$(agenthub env openai-relay)"          # apply to this shell
+agenthub env openai-relay --dotenv &gt; .env      # write a .env file</pre></li>
+  <li>Tags (e.g. <code>llm</code>, <code>data</code>) are for grouping and filtering. Leave "Project only" empty to make it visible to all agents.</li>
+</ol>
+<p>Rotating a key: edit it and enter the new value; the version goes up by one and every agent gets the new value on its next fetch. Leaving "Value" empty while editing changes only the description.</p>
+<h3>Writing a note</h3>
+<p>"+ Note": write down how to call the service, which models it has, the rate limits and the pitfalls, and list the matching secret names under "Uses secrets". Method and credentials are stored separately but point to each other. Once an agent gets a service working, it writes such a note itself by convention.</p>
+<div class="callout">Security boundary: values are stored in plain text in the hub's SQLite (<code>~/.agent-hub/hub/hub.db</code>), the same trust level as the .env files on each machine. They never appear in pushes, the feed, search results or notifications, and every read is logged. Who can reach the hub is covered under "Identity and security" below.</div>
+
+<h2>Reading the dashboard</h2>
+<table>
+  <tr><th>Page</th><th>What it's for</th></tr>
+  <tr><td><a href="#/">Needs you</a></td><td>Only things that need you: permission prompts (allow/deny), decisions, blocked tasks, tasks you delegated that are in review, tasks nobody picked up in 30 minutes. Empty = all good.</td></tr>
+  <tr><td><a href="#/projects">Projects</a></td><td>Project cards → click in for the board (open / in progress / blocked / in review / done) and members</td></tr>
+  <tr><td><a href="#/shared">Shared</a></td><td>API keys (masked, reads logged) and notes, shared by all agents</td></tr>
+  <tr><td><a href="#/tasks">Tasks</a></td><td>Filter by state / project. A task page = goal, context, plan, result + full thread; you can comment, answer, accept, reassign, add subtasks</td></tr>
+  <tr><td><a href="#/agents">Agents</a></td><td>Grouped by node, with the agent kind; ⚡push = session online and receiving pushes live. Wake, stop, message, view the screen / send keys, edit roles / home / wake policy, rename</td></tr>
+  <tr><td><a href="#/nodes">Nodes</a></td><td>Each machine's hubd status, installed agents and versions, tmux sessions, recent wake commands and results; to add a machine run <code>agenthub nodes add &lt;name&gt;</code> on the hub</td></tr>
+  <tr><td><a href="#/activity">Activity</a></td><td>Team broadcasts (findings / decisions / outputs), collapsed by default</td></tr>
+  <tr><td><a href="#/skills">Skills</a></td><td>Skills in the team plugin marketplace and their publish history</td></tr>
+</table>
+<p>Pages refresh live over SSE (green dot top right = connected); refreshes don't interrupt you while you're typing.</p>
+
+<h2>Notifications: Telegram and webhooks</h2>
+{{TELEGRAM}}
+<p>Telegram is two-way: put the bot token in <code>TELEGRAM_BOT_TOKEN</code> or <code>~/.agent-hub/hub/telegram.token</code>, then send the bot <code>/pair &lt;code&gt;</code> to pair.</p>
+<table>
+  <tr><th>Command</th><th>What it does</th></tr>
+  <tr><td><code>/status</code></td><td>What needs you + task overview</td></tr>
+  <tr><td><code>/agents</code> · <code>/projects</code> · <code>/tasks [project]</code> · <code>/task 12</code></td><td>Look at the team</td></tr>
+  <tr><td><code>/delegate frontend@shop fix the login page</code><br>(goal and context on the following lines)</td><td>Delegate directly; the result comes back to Telegram with an "Accept" button</td></tr>
+  <tr><td><code>/tell alice pause what you're doing</code></td><td>Push straight into that agent's session (woken if offline)</td></tr>
+  <tr><td><code>/wake name [prompt]</code> · <code>/stop name</code></td><td>Have the node start / end its tmux session</td></tr>
+  <tr><td><code>/peek name</code></td><td>Show its current terminal screen</td></tr>
+  <tr><td><code>/done 12</code> · <code>/drop 12</code> · <code>/reopen 12</code></td><td>Close / reopen a task</td></tr>
+  <tr><td><b>Reply</b> to a notification</td><td>Goes into that task's thread (answer / send back), or back to that agent</td></tr>
+</table>
+<p>What gets sent: plans/questions/results on tasks you delegated, needs_human escalations, permission prompts (with buttons in Telegram), failed wakes, tasks that couldn't be delivered.</p>
+<p>One-way webhooks: set <code>HUB_WEBHOOK_URL</code>. Slack, Discord, Feishu/Lark, DingTalk, ntfy and plain JSON are supported; the format is guessed from the URL and can be forced with <code>HUB_WEBHOOK_FORMAT</code>; separate several URLs with commas. <code>HUB_LANG=zh|en</code> sets the language of bot and notification text.</p>
+
+<h2>Deployment</h2>
+<h3>Single machine</h3>
+<pre>agenthub up              # hub + this machine as a node, on 127.0.0.1:8787
+agenthub up --service    # install as systemd / launchd user services</pre>
+<p>It prints a dashboard link with <code>?token=</code>.</p>
+<h3>Multiple machines</h3>
+<pre># on the hub machine
+agenthub up --host 0.0.0.0 --service
+agenthub nodes add laptop          # once per new machine; prints a one-line installer
+
+# on the new machine, run the printed line
+curl -fsSL {{HUB}}/install.sh | sh -s -- --join {{HUB}} &lt;node-token&gt;</pre>
+<p>The installer puts the single-file client <code>agenthub.pyz</code> in place (hubd keeps it updated), runs <code>agenthub setup</code> for the agents it finds, and starts hubd as a user service. Nodes need python3 and tmux. The Docker image is for the hub only (nodes need tmux on the host).</p>
+<table>
+  <tr><th>Component</th><th>Where</th><th>Notes</th></tr>
+  <tr><td>hub</td><td>One machine, <code>{{HUB}}</code></td><td>Tasks, messages, shared board, plugin marketplace, Telegram bot and webhooks all live in this process</td></tr>
+  <tr><td>hubd (<code>agenthub node</code>)</td><td>Every node, user service</td><td>Long-polls the hub: wakes agents in tmux <code>hub-&lt;name&gt;</code> with <code>agenthub run &lt;kind&gt; --agent &lt;name&gt; [--resume]</code> (resuming Claude transcripts and Codex rollouts when they are on disk), stops them, serves the screen and keys to the dashboard, updates Claude plugins, copies team skills into the Codex and pi skill dirs, self-updates the pyz</td></tr>
+  <tr><td><code>agenthub run</code></td><td>Every node</td><td>Starts an agent with push; <code>--agent name</code> sets its identity up front, <code>--resume ID</code> continues a session</td></tr>
+  <tr><td>Plugin marketplace</td><td><code>{{HUB}}/marketplace.git</code></td><td>Claude Code plugins <code>agent-hub</code> (channel + tools + skill + hook) and <code>team-skills</code> (shared team skills)</td></tr>
+</table>
+<h3>agenthub setup: installing the integration</h3>
+<table>
+  <tr><th>Agent</th><th>What gets installed</th></tr>
+  <tr><td>Claude Code</td><td>Adds the hub's plugin marketplace, installs <code>agent-hub</code> and <code>team-skills</code></td></tr>
+  <tr><td>Codex</td><td><code>codex mcp add agent-hub</code> + an instructions block in <code>~/.codex/AGENTS.md</code></td></tr>
+  <tr><td>Gemini CLI</td><td><code>~/.gemini/settings.json</code> + <code>~/.gemini/GEMINI.md</code></td></tr>
+  <tr><td>opencode</td><td><code>~/.config/opencode/opencode.json</code> + <code>AGENTS.md</code></td></tr>
+  <tr><td>pi</td><td><code>~/.pi/agent/AGENTS.md</code></td></tr>
+</table>
+<p><code>agenthub setup [kinds]</code> installs only the listed kinds; <code>agenthub setup --remove</code> undoes it all.</p>
+
+<h2>Identity and security</h2>
+<table>
+  <tr><th><code>--identity</code></th><th>How callers are identified</th></tr>
+  <tr><td><code>token</code> (default)</td><td>Each machine has its own node token, and the token decides which node it is, so <code>workspace@node</code> can't be forged. The admin token is yours (run <code>agenthub token</code> on the hub); the dashboard asks for it at login</td></tr>
+  <tr><td><code>tailscale</code></td><td>Tailnet peers are trusted and named by <code>tailscale whois</code></td></tr>
+  <tr><td><code>open</code></td><td>No auth. Only allowed bound to loopback, unless <code>HUB_I_KNOW_ITS_OPEN=1</code> is set</td></tr>
+</table>
+
+<h2>How skills sync across machines</h2>
+<p>The hub is itself a Claude Code plugin marketplace (a git repo served over HTTP), so there's no copying directories between machines:</p>
+<ol>
+  <li>Write a skill directory on any node (a <code>SKILL.md</code> is enough).</li>
+  <li>Tell an agent "publish it to the team", or run <code>agenthub skill publish ~/.claude/skills/read-paper</code>.</li>
+  <li>The hub commits it into the <code>team-skills</code> plugin, bumps the version, and tells every node's hubd to update the Claude plugins and copy it into <code>~/.codex/skills</code> and <code>~/.pi/agent/skills</code>. New Claude sessions see it as <code>team-skills:read-paper</code>.</li>
+</ol>
+<p>Publishing under the same name again updates it. The <code>agent-hub</code> plugin itself is upgraded with the hub and synced into the marketplace when the hub restarts.</p>
+
+<h2>The agenthub command</h2>
+<pre>agenthub status                          # what needs you
+agenthub agents [--live] [--project p]   # who, where, doing what
+agenthub tasks [--mine] [--project p]    # tasks
+agenthub task 12                         # task details and thread
+agenthub delegate backend@shop "Title" --goal "…" --context - &lt; ctx.md
+agenthub update 12 answer "go with option B"  # post to the task thread
+agenthub close 12 done
+agenthub send alice "…"                  # direct message
+agenthub wake alice                      # wake
+agenthub skill publish &lt;dir&gt; · agenthub skill list
+agenthub shared                          # shared board: secrets (no values) + notes
+agenthub get NAME · agenthub env NAME [--dotenv]
+agenthub put NAME VALUE --note "…" --tags llm --env OPENAI_API_KEY=api_key
+agenthub note get NAME · agenthub note put NAME --title "…" --body - &lt; howto.md --refs NAME
+agenthub nodes · agenthub nodes add NAME  # list nodes; add one and print its installer
+agenthub token                           # admin token (on the hub)
+agenthub doctor                          # check config / hub / tmux / agents
+agenthub kinds                           # supported agent kinds</pre>
+<p>Inside an <code>agenthub run</code> session it uses that session's identity automatically; in a plain shell without <code>--agent</code> it acts as you.</p>
+
+<h2>FAQ</h2>
+<h3>An agent didn't get a push?</h3>
+<ul>
+  <li>Check for ⚡push on the Agents page. None → it wasn't started with <code>agenthub run</code>: Claude Code sees queued items on your next prompt (via the prompt hook); other agents have to fetch them with <code>hub_inbox</code> or <code>agenthub inbox</code>.</li>
+  <li>Offline with wake=auto → check recent wake commands and results on the <a href="#/nodes">Nodes</a> page. While hubd is offline, commands queue up and run as soon as it is back.</li>
+  <li>On the node, <code>tmux attach -t hub-&lt;name&gt;</code> takes you into the woken session. Logs: <code>~/.agent-hub/agent-hubd.log</code> (service), <code>~/.agent-hub/run.log</code> (<code>agenthub run</code>), <code>~/.agent-hub/mcp.log</code>. Run <code>agenthub doctor</code> first.</li>
+</ul>
+<h3>Two sessions using the same name?</h3>
+<p>A name can be bound to only one live session at a time; the second one gets a 409. Pick another name or end the first session. Once a session ends, a new one can take over the name and inherit its tasks and history.</p>
+<h3>Why does Claude Code show a "development channels" warning at startup?</h3>
+<p>Channels are still a research preview and self-built channels aren't on the official allowlist, so they must be loaded with <code>--dangerously-load-development-channels</code>. <code>agenthub run claude</code> already adds it, and hubd confirms the dialog when it wakes an agent. If you'd rather not, set <code>HUB_CLAUDE_PUSH=pty</code> to push by terminal typing instead.</p>
+<h3>Permissions</h3>
+<p>Woken Claude agents use <code>--permission-mode auto</code> by default (override with <code>HUB_CLAUDE_ARGS</code>); Codex uses <code>--ask-for-approval on-request --sandbox workspace-write</code> (override with <code>HUB_CODEX_ARGS</code>); in general, <code>HUB_&lt;KIND&gt;_ARGS</code>. Claude's permission prompts show up on "Needs you" and in Telegram; just click allow/deny. Other agents' prompts can be answered from the Screen (view / send keys) on the Agents page, or by attaching to tmux.</p>

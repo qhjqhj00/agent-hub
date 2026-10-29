@@ -1,4 +1,5 @@
 """Shared test helpers: a real hub in a subprocess, with its own data dir and port."""
+import faulthandler
 import json
 import os
 import socket
@@ -8,6 +9,9 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+
+# a hang shows where it is instead of eating the CI job
+faulthandler.dump_traceback_later(300, exit=True)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 AGENTHUB = [sys.executable, os.path.join(ROOT, "bin", "agenthub")]

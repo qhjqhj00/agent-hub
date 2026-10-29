@@ -102,6 +102,26 @@ class Pty:
             time.sleep(0.5)  # TUIs treat an Enter glued to a paste as part of it
             self._write(submit.encode())
 
+    _status = None
+
+    def _exited(self):
+        try:
+            pid, status = os.waitpid(self.pid, os.WNOHANG)
+        except ChildProcessError:
+            return True
+        if pid:
+            self._status = status
+            try:  # whatever it wrote last
+                while select.select([self.fd], [], [], 0)[0]:
+                    data = os.read(self.fd, 65536)
+                    if not data:
+                        break
+                    os.write(1, data)
+            except OSError:
+                pass
+            return True
+        return False
+
     def _write(self, data):
         while data:
             n = os.write(self.fd, data)
@@ -134,6 +154,8 @@ class Pty:
                     r, _, _ = select.select(rl, [], [], 0.5)
                 except InterruptedError:
                     continue
+                if not r and self._exited():
+                    break  # macOS does not always report EOF on the master once the child is gone
                 if self.fd in r:
                     try:
                         data = os.read(self.fd, 65536)
@@ -156,7 +178,7 @@ class Pty:
         finally:
             if old is not None:
                 termios.tcsetattr(0, termios.TCSAFLUSH, old)
-        _, status = os.waitpid(self.pid, 0)
+        status = self._status if self._status is not None else os.waitpid(self.pid, 0)[1]
         return os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else (status >> 8)
 
 

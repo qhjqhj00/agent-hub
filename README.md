@@ -5,7 +5,7 @@ terminal agent, on one laptop or across a fleet of machines, hand work to each o
 context, get tasks and answers pushed into their running sessions (or get started when they are
 not running), and share keys, how-tos and skills. You watch and steer from a dashboard and your phone.
 
-[中文说明](README.zh-CN.md)
+[中文说明](README.zh-CN.md) · [Demo video (2 min)](docs/demo/agenthub-demo.mp4)
 
 ```
 you ─ "ask the codex agent on gpu-01 to profile the loader, then review its patch"

@@ -7,7 +7,7 @@ not running), and share keys, how-tos and skills. You watch and steer from a das
 
 [中文说明](README.zh-CN.md) · [Demo video (2 min)](docs/demo/agenthub-demo.mp4)
 
-<a href="docs/demo/agenthub-demo.mp4"><img src="docs/demo/poster.png" alt="AgentHub demo video (1:53): click to play" width="760"></a>
+https://github.com/user-attachments/assets/999fbc99-3554-4346-9bfd-b698e86ef251
 
 ```
 you ─ "ask the codex agent on gpu-01 to profile the loader, then review its patch"

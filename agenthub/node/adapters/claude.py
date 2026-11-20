@@ -1,95 +1,61 @@
-"""Claude Code.
+"""Claude Code adapter (v2).
 
-Push is native: the agent-hub plugin's MCP server declares the `claude/channel`
-capability and injects hub events straight into the session, idle or not, and
-relays permission prompts to the human. Custom channels need
-`--dangerously-load-development-channels` while Claude Code has them in
-research preview; set HUB_CLAUDE_PUSH=pty to use the terminal wrapper instead.
+Push is in-process (`channel` via MCP `claude/channel` when HUB_CHANNEL=1,
+otherwise `pull`). No PTY wrapper or screen markers.
 """
+from __future__ import annotations
+
 import json
 import os
-import re
+import shlex
 import subprocess
-import time
+from typing import Any
 
 from .base import Adapter, _short
 
 CONFIG_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
-RESUME_MAX_MB = 8          # bigger transcripts take minutes to load, and the agent sits deaf meanwhile
-RESUME_MAX_AGE = 7 * 86400
 
 
 class Claude(Adapter):
     kind = "claude"
     title = "Claude Code"
     binary = "claude"
+    push = "channel"
     tools = "mcp"
-    # the status line under the input box is only drawn once the session takes input
-    ready_markers = ("⏵⏵", "? for shortcuts", "auto mode on", "accept edits on", "plan mode on",
-                     "bypass permissions on", "manual mode on")
-    busy_markers = ("esc to interrupt",)
-    dialogs = (
-        ("Do you trust the files in this folder", "Yes"),
-        ("Is this a project you created or one you trust", "Yes, I trust this folder"),
-        ("Loading development channels", "I am using this for local development"),
-        ("New MCP server found", "Use this MCP server"),
-    )
-    default_args = ("--permission-mode", "auto")
-    resume_hint = "--resume <conversation id>"
 
-    @property
-    def push(self):
-        return "pty" if os.environ.get("HUB_CLAUDE_PUSH") == "pty" else "channel"
-
-    def argv(self, resume=None, prompt=None, extra=()):
-        if "HUB_CLAUDE_ARGS" not in os.environ and os.environ.get("HUB_PERMISSION_MODE"):
-            args = ["--permission-mode", os.environ["HUB_PERMISSION_MODE"]]  # v1 name
-        else:
-            args = self.extra_args()
-        cmd = ["claude"] + args
-        if self.push == "channel":
-            cmd += ["--dangerously-load-development-channels", "plugin:agent-hub@agent-hub"]
-        if resume:
-            cmd += ["--resume", resume]
-        cmd += list(extra)
-        if prompt:
-            cmd.append(prompt)
+    def start_command(
+        self,
+        name: str,
+        workspace: str,
+        conversation: str = "",
+        project: str = "",
+    ) -> str:
+        _ = project
+        ws = shlex.quote(workspace) if workspace else "."
+        cmd = (
+            f"cd {ws} && HUB_CHANNEL=1 HUB_AGENT={shlex.quote(name)} "
+            "claude --dangerously-load-development-channels plugin:agent-hub@agent-hub"
+        )
+        if conversation:
+            cmd += f" --resume {shlex.quote(conversation)}"
         return cmd
 
-    def env(self, agent):
-        return {"HUB_CHANNEL": "1" if self.push == "channel" else "0"}
-
-    def resumable(self, cwd, sid):
-        if not sid or sid.startswith(("cli-", "pid-")) or not re.match(r"^[0-9a-f\-]{36}$", sid):
-            return False, "no previous session"
-        proj = re.sub(r"[^A-Za-z0-9]", "-", cwd)
-        path = os.path.join(CONFIG_DIR, "projects", proj, sid + ".jsonl")
-        if not os.path.isfile(path):
-            return False, "previous transcript not on this node"
-        st = os.stat(path)
-        if st.st_size > RESUME_MAX_MB * 1024 * 1024:
-            return False, "previous session too large to resume (%d MB)" % (st.st_size // 1048576)
-        if time.time() - st.st_mtime > RESUME_MAX_AGE:
-            return False, "previous session older than 7 days"
-        return True, ""
-
-    # Claude reports its conversation to the MCP server through the plugin's SessionStart hook.
-
-    def setup(self, agenthub_cmd, hub_url=None, token=None):
+    def setup(self, agenthub_cmd: list[str], hub_url: str | None = None, token: str | None = None, **_: Any) -> list[str]:
         """Add the hub's plugin marketplace and install the agent-hub + team-skills plugins."""
+        _ = agenthub_cmd
         from ... import client
-        out = []
+
+        out: list[str] = []
         if not self.available():
             return ["claude not on PATH; skipped"]
         hub_url = hub_url or client.url()
         token = token if token is not None else client.token()
-        # the marketplace is a git repo on the hub; git sends the token as the basic-auth password
         mkt = hub_url.rstrip("/") + "/marketplace.git"
         if token:
             scheme, _, rest = mkt.partition("://")
-            mkt = "%s://agenthub:%s@%s" % (scheme, token, rest)
+            mkt = f"{scheme}://agenthub:{token}@{rest}"
 
-        def run(*a):
+        def run(*a: str) -> subprocess.CompletedProcess[str]:
             return subprocess.run(["claude"] + list(a), capture_output=True, text=True, timeout=180)
 
         have = run("plugin", "marketplace", "list").stdout
@@ -97,34 +63,26 @@ class Claude(Adapter):
             run("plugin", "marketplace", "remove", "agent-hub")
         r = run("plugin", "marketplace", "add", mkt)
         if r.returncode:
-            return out + ["claude plugin marketplace add failed: %s" % (r.stderr or r.stdout).strip()[-300:]]
-        out.append("claude: marketplace agent-hub -> %s/marketplace.git" % hub_url)
+            return out + [f"claude plugin marketplace add failed: {(r.stderr or r.stdout).strip()[-300:]}"]
+        out.append(f"claude: marketplace agent-hub -> {hub_url}/marketplace.git")
         for p in ("agent-hub@agent-hub", "team-skills@agent-hub"):
             r = run("plugin", "install", p)
             if r.returncode:
                 r = run("plugin", "update", p)
-            out.append("claude: plugin %s %s" % (p, "ok" if r.returncode == 0 else (r.stderr or r.stdout).strip()[-200:]))
-        p = os.path.join(CONFIG_DIR, "settings.json")
+            out.append(f"claude: plugin {p} {'ok' if r.returncode == 0 else (r.stderr or r.stdout).strip()[-200:]}")
+        cfg_path = os.path.join(CONFIG_DIR, "settings.json")
         try:
-            d = json.load(open(p)) if os.path.isfile(p) else {}
+            d = json.load(open(cfg_path, encoding="utf-8")) if os.path.isfile(cfg_path) else {}
             d.setdefault("extraKnownMarketplaces", {}).setdefault("agent-hub", {})["autoUpdate"] = True
-            json.dump(d, open(p, "w"), indent=2)
-            out.append("claude: marketplace auto-update on (%s)" % _short(p))
+            with open(cfg_path, "w", encoding="utf-8") as fh:
+                json.dump(d, fh, indent=2)
+            out.append(f"claude: marketplace auto-update on ({_short(cfg_path)})")
         except (OSError, ValueError) as e:
-            out.append("claude: could not update %s: %s" % (_short(p), e))
+            out.append(f"claude: could not update {_short(cfg_path)}: {e}")
         return out
 
-    def update_plugins(self):
-        out = []
-        for a in (("plugin", "marketplace", "update", "agent-hub"), ("plugin", "update", "agent-hub@agent-hub"),
-                  ("plugin", "update", "team-skills@agent-hub")):
-            r = subprocess.run(["claude"] + list(a), capture_output=True, text=True, timeout=180)
-            out.append("%s: %s" % (" ".join(a[1:]), (r.stdout + r.stderr).strip()[-200:]))
-        return out
-
-    def teardown(self):
+    def teardown(self, **_: Any) -> list[str]:
         if not self.available():
             return []
-        r = subprocess.run(["claude", "plugin", "marketplace", "remove", "agent-hub"], capture_output=True,
-                           text=True, timeout=60)
+        r = subprocess.run(["claude", "plugin", "marketplace", "remove", "agent-hub"], capture_output=True, text=True, timeout=60)
         return ["claude: marketplace agent-hub removed" if r.returncode == 0 else "claude: nothing to remove"]

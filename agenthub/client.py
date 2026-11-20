@@ -1,8 +1,13 @@
-"""Talking to the hub from a node: config, HTTP, and who "I" am.
+"""Talking to the hub from a node: config, HTTP, and the local session files.
 
-Config lives in ~/.agent-hub/config.json ({"url": ..., "token": ...});
-HUB_URL / HUB_TOKEN override it. Every client (CLI, MCP server, hubd, the
-`agenthub run` wrapper) goes through `call()`.
+Config lives in ~/.agent-hub/config.json ({"url": ..., "token": ...}); HUB_URL /
+HUB_TOKEN override it. The token there is the *node* token (who this machine is).
+
+A running agent is a hub *session*: `POST /v1/sessions` returns a session id and
+token, which every later request carries as `X-Hub-Session`. Whoever registers
+(the MCP server, the pi extension) writes ~/.agent-hub/sessions/<name>.json (0600)
+so the other processes serving the same agent -- a bridge, a hook -- act as that
+session too. See docs/refactor/api.md.
 """
 import json
 import os
@@ -11,7 +16,8 @@ import urllib.request
 
 HOME = os.path.expanduser(os.environ.get("AGENTHUB_HOME") or "~/.agent-hub")
 CFG = os.path.join(HOME, "config.json")
-RUN = os.path.join(HOME, "run")
+SESSIONS = os.path.join(HOME, "sessions")
+RUN = os.path.join(HOME, "run")  # <claude pid>.chan / .conv: how Claude Code hooks find their MCP server
 DEFAULT_URL = "http://127.0.0.1:8787"
 
 
@@ -25,6 +31,15 @@ class HubRefused(RuntimeError):
         self.code = code
 
 
+def _write_private(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        json.dump(data, fh, indent=2)
+    os.replace(tmp, path)
+
+
 def load():
     try:
         with open(CFG) as fh:
@@ -34,15 +49,10 @@ def load():
 
 
 def save(**kw):
-    """Merge keys into the config file (created 0600: it holds a token)."""
+    """Merge keys into the config file (0600: it holds a token)."""
     d = load()
     d.update({k: v for k, v in kw.items() if v is not None})
-    os.makedirs(HOME, exist_ok=True)
-    tmp = CFG + ".tmp"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as fh:
-        json.dump(d, fh, indent=2)
-    os.replace(tmp, CFG)
+    _write_private(CFG, d)
     return d
 
 
@@ -54,13 +64,15 @@ def token():
     return os.environ.get("HUB_TOKEN") or load().get("token") or ""
 
 
-def call(method, path, body=None, timeout=20):
-    """JSON in, JSON out. Raises HubRefused (the hub said no) or HubUnavailable (no hub)."""
-    base = url()
+def call(method, path, body=None, timeout=20, session=None, base=None):
+    """JSON in, JSON out. `session` is a session token. Raises HubRefused or HubUnavailable."""
+    base = (base or url()).rstrip("/")
     req = urllib.request.Request(base + path, method=method)
     tok = token()
     if tok:
         req.add_header("Authorization", "Bearer " + tok)
+    if session:
+        req.add_header("X-Hub-Session", session)
     data = None
     if body is not None:
         data = json.dumps(body).encode()
@@ -88,34 +100,48 @@ def fetch(path, timeout=60):
         return r.read()
 
 
-# ------------------------------------------------------------------ identity on this node
+# ------------------------------------------------------------------ session files
 
-def run_file(pid):
-    return os.path.join(RUN, "%d.json" % pid)
-
-
-def wrapper_info():
-    """The `agenthub run` wrapper this process runs under, if any: {session, agent, kind, ...}.
-
-    Agents do not reliably pass environment variables on to the tools and MCP servers they
-    start (Codex filters them), so the wrapper leaves a file keyed by its pid and we look
-    for it up the process tree."""
-    sid = os.environ.get("HUB_SESSION")
-    if sid and os.environ.get("HUB_WRAPPER_PID"):
-        d = _read_run(int(os.environ["HUB_WRAPPER_PID"]))
-        if d and d.get("session") == sid:
-            return d
-    from .node import procs
-    for pid in procs.ancestors(os.getpid()):
-        d = _read_run(pid)
-        if d:
-            return d
-    return None
+def session_path(name):
+    return os.path.join(SESSIONS, "%s.json" % name)
 
 
-def _read_run(pid):
+def write_session(name, data):
+    _write_private(session_path(name), data)
+
+
+def read_session(name):
     try:
-        with open(run_file(pid)) as fh:
+        with open(session_path(name)) as fh:
             return json.load(fh)
     except (OSError, ValueError):
         return None
+
+
+def remove_session(name, session_id=None):
+    """Delete the file, but only while it still describes `session_id` (a newer session may own it)."""
+    d = read_session(name)
+    if d and (session_id is None or d.get("session_id") == session_id):
+        try:
+            os.remove(session_path(name))
+        except OSError:
+            pass
+
+
+def sessions():
+    out = []
+    try:
+        names = sorted(os.listdir(SESSIONS))
+    except OSError:
+        return out
+    for fn in names:
+        if fn.endswith(".json"):
+            d = read_session(fn[:-5])
+            if d:
+                out.append(d)
+    return out
+
+
+def session_call(sess, method, path, body=None, timeout=20):
+    """A request made as the session a session file describes."""
+    return call(method, path, body, timeout, session=sess["token"], base=sess.get("hub"))

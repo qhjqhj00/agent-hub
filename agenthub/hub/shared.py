@@ -30,8 +30,9 @@ def _q(q, key, default=""):
     return (q.get(key) or [default])[0]
 
 
-def _by(b, q=None):
-    return (b or {}).get("agent") or (q and _q(q, "agent")) or HUMAN
+def _by(ctx):
+    """Who is acting: the session's agent, else the human at the dashboard (admin token)."""
+    return (ctx or {}).get("agent") or "%s@%s" % (HUMAN, (ctx or {}).get("node", "?"))
 
 
 def _tags(v):
@@ -85,13 +86,21 @@ def _vlog(conn, name, agent, action):
 
 # ---------------------------------------------------------------- the board
 
-def api_shared(ctx, q, b):
-    """Everything on the board, without secret values."""
+def api_board(ctx, q, b):
+    """Everything on the board, without secret values (and without note bodies)."""
+    from . import marketplace
     with db() as conn:
-        vault = [_vault_meta(conn, r) for r in conn.execute("SELECT * FROM vault ORDER BY name")]
-        notes = [_note_dict(r) for r in conn.execute("SELECT * FROM notes ORDER BY name")]
-    tags = sorted({t for x in vault + notes for t in x["tags"]})
-    return 200, {"vault": vault, "notes": notes, "tags": tags}
+        secrets = []
+        for r in conn.execute("SELECT * FROM vault ORDER BY name"):
+            m = _vault_meta(conn, r)
+            m["env_keys"] = list(m["env"])
+            secrets.append(m)
+        notes = [_note_dict(r, full=False) for r in conn.execute("SELECT * FROM notes ORDER BY name")]
+    try:
+        skills = marketplace.list_skills()
+    except Exception:
+        skills = []
+    return 200, {"secrets": secrets, "notes": notes, "skills": skills}
 
 
 def manifest(conn, agent=None):
@@ -119,7 +128,7 @@ def manifest(conn, agent=None):
         lines.append("- note   %s %s%s" % (r["name"], tagstr(r), _first_line(r["title"])))
     more = len(vs) + len(ns) - len(lines)
     if more > 0:
-        lines.append("- ... and %d more (hub_shared lists everything)" % more)
+        lines.append("- ... and %d more (hub_board lists everything)" % more)
     return "\n".join(lines)
 
 
@@ -141,10 +150,11 @@ def api_vault_get(ctx, q, b, name):
         r = conn.execute("SELECT * FROM vault WHERE name=?", (name,)).fetchone()
         if not r:
             raise HubError(404, "no vault entry %r" % name)
-        who = _q(q, "agent") or "%s@%s" % (HUMAN, ctx.get("node", "?"))
-        _vlog(conn, name, who, "get")
+        _vlog(conn, name, _by(ctx), "get")
         out = _vault_meta(conn, r)
         out["value"] = r["value"]
+        env = jloads(r["env"], {})
+        out["exports"] = env_lines(name, r["value"], env) if env else []
     bus.bump()
     return 200, out
 
@@ -175,7 +185,7 @@ def api_vault_env(ctx, q, b, name):
         if not env:
             raise HubError(400, "%s has no env mapping; set one on the Shared page or with --env" % name)
         lines = env_lines(name, r["value"], env, fmt)
-        _vlog(conn, name, _q(q, "agent") or "%s@%s" % (HUMAN, ctx.get("node", "?")), "get")
+        _vlog(conn, name, _by(ctx), "get")
     bus.bump()
     return 200, {"name": name, "lines": lines}
 
@@ -184,7 +194,7 @@ def api_vault_put(ctx, q, b, name):
     """Create or update. Without `value`, only the metadata of an existing entry changes."""
     if not NAME_RE.match(name):
         raise HubError(400, "name: letters, digits, - _ . (max 64)")
-    by = _by(b)
+    by = _by(ctx)
     with db() as conn:
         r = conn.execute("SELECT * FROM vault WHERE name=?", (name,)).fetchone()
         has_value = "value" in b and b["value"] is not None and b["value"] != ""
@@ -212,7 +222,7 @@ def api_vault_put(ctx, q, b, name):
 def api_vault_delete(ctx, q, b, name):
     with db() as conn:
         conn.execute("DELETE FROM vault WHERE name=?", (name,))
-        _vlog(conn, name, _by(b, q), "delete")
+        _vlog(conn, name, _by(ctx), "delete")
     bus.bump()
     return 200, {"ok": True}
 
@@ -246,7 +256,7 @@ def api_note(ctx, q, b, name):
 def api_note_put(ctx, q, b, name):
     if not NAME_RE.match(name):
         raise HubError(400, "name: letters, digits, - _ . (max 64)")
-    by = _by(b)
+    by = _by(ctx)
     with db() as conn:
         r = conn.execute("SELECT * FROM notes WHERE name=?", (name,)).fetchone()
         if not r and not (b.get("body") or b.get("title")):
@@ -280,15 +290,13 @@ def api_note_delete(ctx, q, b, name):
 
 
 ROUTES = [
-    ("GET", r"^/v1/shared$", api_shared),
-    ("GET", r"^/v1/vault$", api_vault_list),
-    ("GET", r"^/v1/vault/([^/]+)/env$", api_vault_env),
-    ("GET", r"^/v1/vault/([^/]+)/log$", api_vault_log),
-    ("GET", r"^/v1/vault/([^/]+)$", api_vault_get),
-    ("POST", r"^/v1/vault/([^/]+)$", api_vault_put),
-    ("DELETE", r"^/v1/vault/([^/]+)$", api_vault_delete),
-    ("GET", r"^/v1/notes$", api_notes),
-    ("GET", r"^/v1/notes/([^/]+)$", api_note),
-    ("POST", r"^/v1/notes/([^/]+)$", api_note_put),
-    ("DELETE", r"^/v1/notes/([^/]+)$", api_note_delete),
+    ("GET", r"^/v1/board$", api_board),
+    ("GET", r"^/v1/board/secret/([^/]+)/env$", api_vault_env),
+    ("GET", r"^/v1/board/secret/([^/]+)/log$", api_vault_log),
+    ("GET", r"^/v1/board/secret/([^/]+)$", api_vault_get),
+    ("POST", r"^/v1/board/secret/([^/]+)$", api_vault_put),
+    ("DELETE", r"^/v1/board/secret/([^/]+)$", api_vault_delete),
+    ("GET", r"^/v1/board/note/([^/]+)$", api_note),
+    ("POST", r"^/v1/board/note/([^/]+)$", api_note_put),
+    ("DELETE", r"^/v1/board/note/([^/]+)$", api_note_delete),
 ]

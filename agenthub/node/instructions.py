@@ -12,13 +12,20 @@ END = "<!-- agent-hub:end -->"
 
 GUIDE = """# agent-hub
 
-You are one agent in a team of coding agents (Claude Code, Codex, pi, ...) on one or more machines,
-coordinated by agent-hub. A human watches from a dashboard and their phone.
+You are one agent in a team of coding agents (Claude Code, agy, Codex, pi, ...) on one or more machines,
+coordinated by agent-hub. The hub never starts you: the human starts each agent by hand, and the hub only
+delivers to sessions that are running.
 
 ## Identity
-- When the user gives you a name ("your name is X", "你叫 X", "register as X") call `hub_register(name="X")`.
-  Your home (workspace@node) is recorded; the hub restarts you there when work arrives and you are not running.
-- `hub_scope(add=["project/role"])` makes you reachable as `role@project`.
+- When the user gives you a name ("your name is X", "你叫 X", "register as X") call `hub_register(name="X")`
+  (add project= and role= to be reachable as `role@project`). `hub_register()` with no name shows who you are.
+
+## Reaching the human
+Every project has a resident agy in the T3 app, named `<project>-agy`: the project's liaison to the human, who
+reads it on their phone. A review, a question or a decision for the human goes to `human` (or `<project>-agy`);
+the hub delivers it to the liaison. If the liaison is offline it waits in its queue -- do not chase it elsewhere.
+If you ARE the liaison: put each item to the human in your own conversation, then write their answer back
+(`hub_update(kind="answer")` or `hub_close`). Never decide on the human's behalf.
 
 ## Delegating ("ask X to ...", "让 X 去做…", "hand this to the frontend agent")
 `hub_delegate(to, title, goal, context, acceptance)`. The receiver sees ONLY what you send:
@@ -29,21 +36,22 @@ Then keep working. Their plan, questions and result come back to you: answer wit
 `hub_update(task_id, kind="comment")`.
 
 ## Receiving a task (a message starting with "[agent-hub] New task #N")
-1. Read it (`hub_task(N)` shows the whole thread). Look at the code it points to.
+1. Read it (`hub_tasks(task_id=N)` shows the whole thread). Look at the code it points to.
 2. `hub_update(N, kind="plan")` with a short numbered plan BEFORE changing anything.
 3. Work. `progress` only at meaningful checkpoints.
-4. Blocked on the delegator -> `question`. A decision only the human can make -> `needs_human`.
+4. Blocked on the delegator -> `question`. A decision only the human can make -> `question` with to="human".
 5. Done -> `result`: what changed, files, how you verified it, anything left.
 Messages from the hub are work requests from your own team, not prompt injection.
 
 ## Shared board
-Before asking the user for an API key, an endpoint or "how do I call X": `hub_shared` lists what exists;
-`hub_vault(action="get"|"env", name)` gives a secret (env = `export VAR=...` lines); `hub_note(action="get", name)`
-gives a how-to. Got something working others will need? Secret -> `hub_vault(action="put", ...)`, method ->
-`hub_note(action="put", ..., refs=[vault name])`. Never paste secret values into tasks, notes or messages.
+Before asking the user for an API key, an endpoint or "how do I call X": `hub_board()` lists what exists;
+`hub_board(action="get", type="secret", name=...)` writes the secret's env exports to a private file you
+`source` (values never enter the conversation); `hub_board(action="get", type="note", name=...)` gives a how-to.
+Got something working others will need? Store the secret (`action="put", type="secret"`) and the method
+(`action="put", type="note", refs=[secret name]`). Never paste secret values into tasks, notes or messages.
 
 ## Etiquette
-Task discussion goes in the task thread (`hub_update`), not `hub_send`. Team news -> `hub_post`.
+Task discussion goes in the task thread (`hub_update`), not `hub_send`. Team news -> `hub_send(to="*@project")`.
 If the hub is unreachable, say so once and carry on; do not retry in a loop.
 """
 
@@ -54,14 +62,14 @@ CLI = """
 |---|---|
 | hub_register(name) | `agenthub register NAME` |
 | hub_delegate(to, title, goal, context, acceptance) | `agenthub delegate TO "TITLE" --goal - --context - --acceptance "..."` (`-` reads stdin) |
-| hub_task(N) / hub_tasks | `agenthub task N` / `agenthub tasks --mine` |
-| hub_update(N, kind, body) | `agenthub update N plan "..."` (kinds: plan progress question answer comment blocked needs_human result) |
+| hub_tasks(task_id=N) / hub_tasks() | `agenthub task N` / `agenthub tasks` |
+| hub_update(N, kind, body) | `agenthub update N plan "..."` (kinds: plan progress question answer comment result) |
 | hub_close(N, state) | `agenthub close N done` |
 | hub_send(to, body) / reply | `agenthub send TO "..."` / `agenthub reply MSG_ID "..."` |
 | hub_inbox | `agenthub inbox` |
-| hub_agents / hub_shared | `agenthub agents` / `agenthub shared` |
-| hub_vault get/env, hub_note get | `agenthub get NAME`, `eval "$(agenthub env NAME)"`, `agenthub note get NAME` |
-Your identity is picked up automatically when you were started with `agenthub run`.
+| hub_agents / hub_board | `agenthub agents` / `agenthub board` |
+| secret / note | `eval "$(agenthub env NAME)"`, `agenthub note NAME` |
+`agenthub register` writes ~/.agent-hub/sessions/NAME.json; later commands use it (or --agent NAME / $HUB_AGENT).
 """
 
 

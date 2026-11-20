@@ -32,8 +32,8 @@ class Hub:
         self.url = "http://127.0.0.1:%d" % self.port
         self.env = dict(os.environ, HUB_DATA=os.path.join(self.tmp, "hub"), AGENTHUB_HOME=os.path.join(self.tmp, "home"),
                         HUB_IDENTITY=identity, HUB_URL=self.url, HOME=self.tmp)
-        for k in ("CLAUDE_CODE_SESSION_ID", "HUB_SESSION", "HUB_AGENT", "HUB_WRAPPER_PID", "TELEGRAM_BOT_TOKEN",
-                  "HUB_WEBHOOK_URL", "HUB_TOKEN"):
+        for k in ("CLAUDE_CODE_SESSION_ID", "HUB_SESSION", "HUB_AGENT", "HUB_CHANNEL", "HUB_KIND", "HUB_TOKEN",
+                  "ANTIGRAVITY_CONVERSATION_ID", "CLAUDE_PROJECT_DIR"):
             self.env.pop(k, None)
         self.env.update(extra_env or {})
         self.proc = subprocess.Popen(AGENTHUB + ["serve", "--port", str(self.port)], env=self.env,
@@ -55,12 +55,14 @@ class Hub:
         with open(os.path.join(self.env["AGENTHUB_HOME"], "config.json"), "w") as fh:
             json.dump({"url": self.url, "token": self.admin}, fh)
 
-    def call(self, method, path, body=None, token=None):
-        """(status, json) -- never raises on HTTP errors."""
+    def call(self, method, path, body=None, token=None, session=None):
+        """(status, json) -- never raises on HTTP errors. `session`: an X-Hub-Session token."""
         req = urllib.request.Request(self.url + path, method=method)
         tok = self.admin if token is None else token
         if tok:
             req.add_header("Authorization", "Bearer " + tok)
+        if session:
+            req.add_header("X-Hub-Session", session)
         data = None
         if body is not None:
             data = json.dumps(body).encode()

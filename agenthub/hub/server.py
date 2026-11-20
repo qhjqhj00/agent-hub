@@ -1,5 +1,5 @@
-"""HTTP plumbing: routing, caller identity, SSE, static files, and the
-maintenance loop that keeps queued work moving.
+"""HTTP plumbing: routing, caller identity, SSE, static files, and the upkeep loop
+that ends sessions whose heartbeat stopped.
 """
 import json
 import os
@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import api, bus, core, identity, marketplace
 from .core import HubError
-from .store import DATA_DIR, HUMAN, PKG, db, now
+from .store import DATA_DIR, PKG, db
 
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 INSTALL_SH = os.path.join(PKG, "node", "install.sh")
@@ -105,15 +105,26 @@ class Handler(BaseHTTPRequestHandler):
                     body = json.loads(raw.decode() or "{}")
                 except ValueError:
                     return self._send(400, {"error": "body must be JSON"})
+            ctx = dict(ctx or {})
+            tok = (self.headers.get("X-Hub-Session") or "").strip()
+            if tok and not (method == "POST" and path == "/v1/sessions"):
+                ctx["session_token"] = tok
+                if not path.endswith("/pull"):  # pull authenticates on every round itself
+                    with db() as conn:
+                        ctx["agent"] = core.session_for(conn, ctx, tok)["agent"]
             for m, rx, fn in api.ROUTES:
                 if m != method:
                     continue
                 mt = rx.match(path)
                 if mt:
-                    if fn.__name__.startswith("api_admin") and (not ctx or ctx["role"] != "admin"):
-                        return self._send(403, {"error": "admin token required"})
+                    # acting as an agent (a session) is never acting as the human, whatever token the box holds
+                    if fn.__name__.startswith("api_admin") and (ctx.get("role") != "admin" or ctx.get("session_token")):
+                        return self._send(403, {"error": "admin token required (and no X-Hub-Session)"})
+                    if (fn.__module__.endswith("shared") and method != "GET" and not ctx.get("agent")
+                            and ctx.get("role") != "admin"):
+                        return self._send(401, {"error": "X-Hub-Session or the admin token required"})
                     groups = [urllib.parse.unquote(g) for g in mt.groups()]
-                    code, out = fn(ctx or {}, q, body, *groups)
+                    code, out = fn(ctx, q, body, *groups)
                     return self._send(code, out)
             self._send(404, {"error": "no route %s %s" % (method, path)})
         except HubError as e:
@@ -210,58 +221,12 @@ class Handler(BaseHTTPRequestHandler):
             return
 
 
-def _vt(v):
-    import re
-    return tuple(int(x) for x in re.findall(r"\d+", v or "0")[:3])
-
-
-def _hubd_version():
-    return __import__("agenthub").__version__
-
-
 def maintenance():
-    """Every 30s: re-wake agents with stale queued work, expire what nobody will answer."""
+    """Every 30s: end sessions whose heartbeat stopped (frees their names, voids their leases)."""
     while True:
         try:
             with db() as conn:
-                # sent into a poll that was never acknowledged: the session died holding it
-                conn.execute("UPDATE deliveries SET sent_at=NULL, session='' WHERE delivered_at IS NULL AND "
-                             "sent_at < strftime('%Y-%m-%dT%H:%M:%S+00:00','now','-75 seconds') AND agent!=?", (HUMAN,))
-                for r in conn.execute(
-                        "SELECT DISTINCT agent FROM deliveries WHERE delivered_at IS NULL AND agent!=? "
-                        "AND kind!='verdict' AND created_at < strftime('%Y-%m-%dT%H:%M:%S+00:00','now','-60 seconds')",
-                        (HUMAN,)).fetchall():
-                    core.ensure_listening(conn, r["agent"], "queued work")
-                # taken by a poll that was never acknowledged: that hubd died mid-poll (restart,
-                # self-update) and the order went into a dead socket -- hand it out again
-                for n in conn.execute("SELECT name, info FROM nodes").fetchall():
-                    if True:
-                        if conn.execute("UPDATE orders SET state='pending', taken_at=NULL WHERE node=? AND "
-                                        "state='taken' AND acked_at IS NULL AND taken_at < "
-                                        "strftime('%Y-%m-%dT%H:%M:%S+00:00','now','-75 seconds')",
-                                        (n["name"],)).rowcount:
-                            bus.bump()
-                conn.execute("UPDATE orders SET state='stale', done_at=? WHERE state='taken' AND "
-                             "taken_at < strftime('%Y-%m-%dT%H:%M:%S+00:00','now','-10 minutes')", (now(),))
-                conn.execute("UPDATE orders SET state='expired', done_at=? WHERE state='pending' AND "
-                             "created_at < strftime('%Y-%m-%dT%H:%M:%S+00:00','now','-1 day')", (now(),))
-                conn.execute("UPDATE sessions SET ended_at=? WHERE ended_at IS NULL AND "
-                             "last_seen < strftime('%Y-%m-%dT%H:%M:%S+00:00','now','-15 minutes')", (now(),))
-                # nodes running an older client installed from this hub (not pip): bring them up to date
-                want = _hubd_version()
-                for n in conn.execute("SELECT name, info FROM nodes WHERE hubd_seen > "
-                                      "strftime('%Y-%m-%dT%H:%M:%S+00:00','now','-2 minutes')").fetchall():
-                    info = json.loads(n["info"] or "{}")
-                    have = info.get("hubd", "0")
-                    if want and _vt(have) < _vt(want) and info.get("install") == "pyz" and not conn.execute(
-                            "SELECT 1 FROM orders WHERE node=? AND kind='self_update' AND created_at > "
-                            "strftime('%Y-%m-%dT%H:%M:%S+00:00','now','-15 minutes')", (n["name"],)).fetchone():
-                        core.order(conn, n["name"], "self_update", "", {}, "hubd %s -> %s" % (have, want))
-                conn.execute("UPDATE permissions SET state='expired' WHERE state='pending' AND "
-                             "created_at < strftime('%Y-%m-%dT%H:%M:%S+00:00','now','-30 minutes')")
-                # verdicts nobody picked up are worthless after the dialog is gone
-                conn.execute("DELETE FROM deliveries WHERE kind='verdict' AND delivered_at IS NULL AND "
-                             "created_at < strftime('%Y-%m-%dT%H:%M:%S+00:00','now','-30 minutes')")
+                core.maintain(conn)
         except Exception:
             traceback.print_exc()
         time.sleep(30)
@@ -279,8 +244,6 @@ def serve(host, port, ready=None):
     except Exception:
         traceback.print_exc()
     threading.Thread(target=maintenance, daemon=True).start()
-    from . import notify
-    notify.start()
     httpd = ThreadingHTTPServer((host, port), Handler)
     httpd.daemon_threads = True
     print("agent-hub %s listening on http://%s:%d (identity: %s, data: %s)"

@@ -1,5 +1,5 @@
-"""Everything that runs on a node: the daemon (hubd), the agent wrapper, the MCP
-server, and the adapters that know each coding agent."""
+"""Everything that runs on a node: the MCP server, the Claude Code hooks, and the
+adapters that know each coding agent (setup, start commands)."""
 import os
 import shutil
 import sys
@@ -23,7 +23,7 @@ def install_kind():
 
 
 def self_cmd():
-    """argv prefix that runs this same agenthub (for MCP configs, tmux, services)."""
+    """argv prefix that runs this same agenthub (for MCP configs and hooks)."""
     z = zip_path()
     if z:
         return [z] if os.access(z, os.X_OK) else [sys.executable, z]

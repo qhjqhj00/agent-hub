@@ -14,7 +14,7 @@ Skills are distributed by the hub, not by copying directories between machines.
    - with hub tools: `hub_skill_publish(path="<dir>")`
    - from a shell: `agenthub skill publish <dir>`
 3. The hub commits it into its skill store (the `team-skills` plugin of its Claude Code
-   marketplace) and tells every node's hubd to update: Claude Code sees it as
+   marketplace); Claude Code picks it up at its next start (marketplace auto-update) and sees it as
    `team-skills:<name>`; Codex and pi get it as a folder in their skills directory.
 
 Publishing the same name again replaces it. `hub_skills` / `agenthub skill list` shows what is published.

@@ -4,7 +4,7 @@ Two kinds of entry:
 
   vault  secrets -- api keys, tokens, a working .env. The value leaves the hub
          only when someone asks for that name, and every ask is logged. Never
-         pushed, never in the feed, never on Telegram.
+         pushed, never in a thread or the feed.
   notes  non-secret knowledge -- endpoints, model lists, conventions, how to
          use a service and its pitfalls. Edited in place, history kept. A note
          can reference vault names, so the method and the credential stay

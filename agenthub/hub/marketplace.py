@@ -14,9 +14,9 @@ Two plugins live in it:
                work tree's git history *is* the skill history.
 
 Each change bumps the plugin's version, which is what `claude plugin update`
-compares; hubd runs that on every node after a publish. Agents other than
-Claude Code get the same skills as files: hubd copies them into each agent's
-skill directory (see agenthub/node/adapters).
+compares. `agenthub setup claude` turns on marketplace auto-update, so Claude
+Code picks a new version up at its next start. Other agents do not get team
+skills automatically yet (GET /v1/skills/export serves them as files).
 """
 import json
 import os

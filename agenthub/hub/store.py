@@ -174,10 +174,18 @@ def db():
         conn.close()
 
 
+# Columns added after a database was first created: (table, column, declaration).
+# init_db() adds the missing ones, so an existing hub.db upgrades in place.
+ADDED_COLUMNS = ()
+
+
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
     with db() as conn:
         conn.executescript(SCHEMA)
+        for table, col, decl in ADDED_COLUMNS:
+            if col not in {r["name"] for r in conn.execute("PRAGMA table_info(%s)" % table)}:
+                conn.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, col, decl))
 
 
 def setting(conn, key, default=""):

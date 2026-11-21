@@ -1,7 +1,7 @@
 """In-process change notification.
 
 Every write that someone might be waiting on calls `bump()`. Long-polls
-(channel pulls, hubd orders, the dashboard's SSE stream) block in `wait()`
+(session pulls, the dashboard's SSE stream) block in `wait()`
 until the counter moves or they time out, then re-read the database. The
 counter carries no payload on purpose: SQLite stays the only source of truth.
 """

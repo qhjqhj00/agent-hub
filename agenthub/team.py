@@ -228,7 +228,9 @@ def c_agent_set(a):
 def c_nodes(a):
     if a.action == "add":
         out = call(a, "POST", "/v1/admin/nodes", {"name": a.name})
-        print("node %s token: %s\non that machine: agenthub join %s %s" % (out["name"], out["token"], client.url(), out["token"]))
+        u = client.url()
+        print("node %s token: %s\non that machine:\n  curl -fsSL %s/install.sh | sh -s -- --join %s %s"
+              % (out["name"], out["token"], u, u, out["token"]))
     elif a.action == "revoke":
         print(call(a, "DELETE", "/v1/admin/nodes/" + a.name))
     else:

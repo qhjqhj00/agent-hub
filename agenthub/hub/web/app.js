@@ -68,7 +68,8 @@ function agentCard(a, project) {
     <div class="row"><span class="dot ${a.presence}"></span><span class="name">${esc(a.name)}</span>${kindCtl}
       ${a.presence === "live" && a.state ? `<span class="chip ${a.state}">${a.state === "busy" ? "忙" : "闲"}</span>` : ""}
       ${liaison ? `<span class="chip liaison">联络人</span>` : ""}
-      ${a.pending ? `<span class="chip" title="待投递">${a.pending} 条待收</span>` : ""}
+      ${a.stale_queued ? `<span class="chip stale" title="未送达超过 2 分钟">${a.stale_queued} 条滞留 ${secs(a.oldest_queued_s)}</span>`
+        : a.pending ? `<span class="chip" title="待投递">${a.pending} 条待收</span>` : ""}
       <span class="grow"></span><span class="meta">${a.presence === "live" ? "在线" : ago(a.last_seen)}</span></div>
     <div class="meta">${esc(a.node)} · ${esc(short(a.workspace))} · ${esc(a.scopes.filter(s => s.project === project).map(s => s.role).filter(Boolean).join(", ") || "")}</div>
     ${a.description ? `<div class="desc">${esc(a.description)}</div>` : ""}
@@ -84,23 +85,57 @@ window.archive = (name, on) => act(() => api("/v1/admin/agents/" + encodeURIComp
 window.setKind = (name, kind) => act(() => api("/v1/admin/agents/" + encodeURIComponent(name), { kind }), "已更新类型");
 window.setLiaison = (project, liaison) => act(() => api("/v1/admin/projects/" + encodeURIComponent(project), { liaison }), "已设置联络人");
 
+const secs = s => s < 90 ? s + " 秒" : s < 5400 ? Math.round(s / 60) + " 分钟" : Math.round(s / 3600) + " 小时";
+
+/* What needs a person, first: results to review, questions waiting, deliveries stuck. Empty = no box. */
+function attentionBox(att) {
+  const rows = [];
+  for (const a of att.stale) rows.push(`<div class="att stale"><span class="tag">投递滞留</span>
+    <span class="grow"><b>${esc(a.name)}</b> 有 ${a.stale_queued} 条消息 ${secs(a.oldest_queued_s)} 没送进去
+    <span class="meta">${a.presence === "live" ? (a.push === "bridge" ? "· 检查这台机器上的 bridge" : "· 会话在线但没取消息") : "· agent 不在线"} · ${esc(a.node)}</span></span></div>`);
+  for (const t of att.questions) rows.push(`<a class="att question" href="#/task/${t.id}"><span class="tag">待答</span>
+    <span class="grow"><span class="id">#${t.id}</span> ${esc(t.title)}<span class="meta"> · ${esc(t.asked_by)} 问${t.recipient === "human" ? "你" : ""}：${esc((t.body || "").split("\n")[0].slice(0, 80))}</span></span></a>`);
+  for (const t of att.review) rows.push(`<a class="att review" href="#/task/${t.id}"><span class="tag">待验收</span>
+    <span class="grow"><span class="id">#${t.id}</span> ${esc(t.title)}<span class="meta"> · ${esc(t.owner)} → ${esc(t.created_by)} · ${ago(t.updated_at)}</span></span></a>`);
+  return rows.length ? `<section class="attention"><h2>需要处理 <span class="sub">${rows.length}</span></h2>${rows.join("")}</section>` : "";
+}
+
+/* Busy, carrying work, or with something queued: a full card. Everyone else: one quiet line. */
+const needsCard = a => a.presence === "live" || a.pending || (a.current_task && a.current_task.state !== "open");
+
+function agentRow(a, project) {
+  return `<div class="arow"><span class="dot ${a.presence}"></span><span class="name">${esc(a.name)}</span>
+    <span class="chip">${esc(a.kind)}</span>${a.liaison_of.includes(project) ? `<span class="chip liaison">联络人</span>` : ""}
+    <span class="grow meta">${esc(short(a.workspace))}</span><span class="meta">${ago(a.last_seen)}</span>
+    <span class="cmd"><code hidden>${esc(a.start)}</code><button class="btn" onclick="copyCmd(this)" title="${esc(a.start)}"><span class="long">复制启动命令</span><span class="short">复制</span></button></span>
+    ${CFG.admin ? `<button class="btn" onclick="archive('${esc(a.name)}', true)">归档</button>` : ""}</div>`;
+}
+
 async function viewAgents() {
   const o = await api("/v1/overview");
   const projects = o.projects.filter(p => p.agents.length || Object.values(p.tasks).some(Boolean));
-  projects.sort((a, b) => b.agents.filter(x => x.presence === "live").length - a.agents.filter(x => x.presence === "live").length
-    || a.name.localeCompare(b.name));
-  const live = projects.reduce((n, p) => n + p.agents.filter(a => a.presence === "live").length, 0);
+  const liveIn = p => p.agents.filter(x => x.presence === "live").length;
+  projects.sort((a, b) => liveIn(b) - liveIn(a) || a.name.localeCompare(b.name));
+  const live = projects.reduce((n, p) => n + liveIn(p), 0);
   let h = `<h1>Agents <span class="sub">${live} 个在线</span><span class="grow"></span>${o.archived ? `<a class="sub" href="#/archived">已归档 ${o.archived} →</a>` : ""}</h1>`;
+  h += attentionBox(o.attention);
+  const section = (title, agents, project, extra) => {
+    agents = [...agents].sort((a, b) => (b.presence === "live") - (a.presence === "live") || a.name.localeCompare(b.name));
+    const cards = agents.filter(needsCard), quiet = agents.filter(a => !needsCard(a));
+    let x = `<h2>${title}<span class="grow"></span>${extra || ""}</h2>`;
+    if (cards.length) x += `<div class="grid">${cards.map(a => agentCard(a, project)).join("")}</div>`;
+    if (quiet.length) x += `<div class="quiet">${quiet.map(a => agentRow(a, project)).join("")}</div>`;
+    return x;
+  };
   for (const p of projects) {
-    const agents = [...p.agents].sort((a, b) => (b.presence === "live") - (a.presence === "live") || a.name.localeCompare(b.name));
     const active = p.tasks.open + p.tasks.working + p.tasks.review;
     const liaisonCtl = CFG.admin
-      ? `<select class="btn" onchange="setLiaison('${esc(p.name)}', this.value)"><option value="">（无联络人）</option>${agents.map(a => `<option ${a.name === p.liaison ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select>`
+      ? `<select class="btn" onchange="setLiaison('${esc(p.name)}', this.value)"><option value="">（无联络人）</option>${p.agents.map(a => `<option ${a.name === p.liaison ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select>`
       : (p.liaison ? `<span class="chip liaison">联络人 ${esc(p.liaison)}</span>` : `<span class="chip">无联络人</span>`);
-    h += `<h2>${esc(p.label || p.name)} <a class="sub" href="#/tasks?project=${encodeURIComponent(p.name)}">${active} 个进行中的任务${p.tasks.review ? ` · ${p.tasks.review} 待验收` : ""}</a><span class="grow"></span>${liaisonCtl}</h2>`;
-    h += `<div class="grid">${agents.map(a => agentCard(a, p.name)).join("") || `<div class="empty">没有 agent</div>`}</div>`;
+    h += section(`${esc(p.label || p.name)} <a class="sub" href="#/tasks?project=${encodeURIComponent(p.name)}">${active ? active + " 个进行中的任务" : "没有进行中的任务"}</a>`,
+      p.agents, p.name, liaisonCtl);
   }
-  if (o.unassigned.length) h += `<h2>未加入项目</h2><div class="grid">${o.unassigned.map(a => agentCard(a, "")).join("")}</div>`;
+  if (o.unassigned.length) h += section("未加入项目", o.unassigned, "");
   return h;
 }
 

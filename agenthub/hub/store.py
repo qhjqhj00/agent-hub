@@ -18,6 +18,7 @@ DB_PATH = os.environ.get("HUB_DB", os.path.join(DATA_DIR, "hub.db"))
 LIVE_AFTER = 120        # a session that has not touched the hub for this long is over
 IDLE_AFTER = 2 * 3600   # an agent seen within this long shows as idle rather than offline
 LEASE = 60              # a pulled inbox item is not handed out again for this long
+STALE_AFTER = 120       # an undelivered inbox item older than this is flagged on the dashboard
 
 HUMAN = "human"
 KINDS = ("claude", "agy", "codex", "pi", "other")

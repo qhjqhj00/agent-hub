@@ -256,6 +256,62 @@ class HubTest(unittest.TestCase):
         # only the admin archives
         self.assertEqual(self.as_(tb, "POST", "/v1/admin/agents/" + a, {"archived": True})[0], 403)
 
+    def test_liaison_hears_no_progress_noise(self):
+        li, sl, tl = self.reg("p3-agy", kind="agy", project="p3")
+        self.hub.call("POST", "/v1/admin/projects/p3", {"liaison": li})
+        dev, sd, td = self.reg(project="p3", role="dev")
+        _, t = self.hub.call("POST", "/v1/tasks", {"to": dev, "title": "for the human", "project": "p3"})
+        tid = t["task"]["id"]
+        for kind, body, to in (("plan", "1. x", ""), ("progress", "half way", ""), ("progress", "FYI human", "human"),
+                               ("question", "A or B?", ""), ("result", "done", "")):
+            self.as_(td, "POST", "/v1/tasks/%d" % tid, {"kind": kind, "body": body, "to": to})
+        got = [(i["kind"], i["text"].split("\n")[1]) for i in self.pull(sl, tl)]
+        self.assertEqual(got, [("plan", "1. x"), ("progress", "FYI human"), ("question", "A or B?"), ("result", "done")])
+        _, full = self.hub.call("GET", "/v1/tasks/%d" % tid)
+        self.assertIn("half way", [p["body"] for p in full["posts"]], "progress still in the thread")
+        # the liaison as an ordinary party (it owns the task) still hears progress
+        _, t2 = self.as_(td, "POST", "/v1/tasks", {"to": li, "title": "liaison's own task"})
+        self.as_(td, "POST", "/v1/tasks/%d" % t2["task"]["id"], {"kind": "progress", "body": "note to owner"})
+        self.assertIn("note to owner", "".join(i["text"] for i in self.pull(sl, tl)))
+
+    def _db(self):
+        import os, sqlite3
+        return sqlite3.connect(os.path.join(self.hub.tmp, "hub", "hub.db"))
+
+    def test_stale_queue_and_attention(self):
+        a, sa, ta = self.reg(project="p4")
+        b, sb, tb = self.reg(project="p4")
+        self.as_(ta, "POST", "/v1/posts", {"to": b, "body": "stuck one"})
+        self.as_(ta, "POST", "/v1/posts", {"to": b, "body": "fresh one"})
+        card = self.hub.call("GET", "/v1/agents/" + b)[1]
+        self.assertEqual((card["stale_queued"], card["oldest_queued_s"]), (0, 0))
+        with self._db() as c:  # make the first one five minutes old
+            c.execute("UPDATE inbox SET created_at=datetime('now','-300 seconds')||'+00:00' WHERE agent=? AND "
+                      "text LIKE '%stuck one%'", (b,))
+            c.execute("UPDATE inbox SET created_at=replace(created_at,' ','T') WHERE agent=?", (b,))
+        card = self.hub.call("GET", "/v1/agents/" + b)[1]
+        self.assertEqual(card["stale_queued"], 1)
+        self.assertGreaterEqual(card["oldest_queued_s"], 290)
+        att = self.hub.call("GET", "/v1/overview")[1]["attention"]
+        self.assertIn(b, [x["name"] for x in att["stale"]])
+        # delivered -> gone from the alarm
+        items = self.pull(sb, tb)
+        self.as_(tb, "POST", "/v1/sessions/%s/delivered" % sb, {"ids": [i["id"] for i in items]})
+        att = self.hub.call("GET", "/v1/overview")[1]["attention"]
+        self.assertNotIn(b, [x["name"] for x in att["stale"]])
+        # a result waiting for review, and an unanswered question
+        _, t = self.as_(ta, "POST", "/v1/tasks", {"to": b, "title": "review me"})
+        self.as_(tb, "POST", "/v1/tasks/%d" % t["task"]["id"], {"kind": "result", "body": "r"})
+        _, q = self.as_(ta, "POST", "/v1/tasks", {"to": b, "title": "ask me"})
+        self.as_(tb, "POST", "/v1/tasks/%d" % q["task"]["id"], {"kind": "question", "body": "which?"})
+        att = self.hub.call("GET", "/v1/overview")[1]["attention"]
+        self.assertIn(t["task"]["id"], [x["id"] for x in att["review"]])
+        qs = {x["id"]: x for x in att["questions"]}
+        self.assertEqual((qs[q["task"]["id"]]["asked_by"], qs[q["task"]["id"]]["body"]), (b, "which?"))
+        self.as_(ta, "POST", "/v1/tasks/%d" % q["task"]["id"], {"kind": "answer", "body": "this"})
+        att = self.hub.call("GET", "/v1/overview")[1]["attention"]
+        self.assertNotIn(q["task"]["id"], [x["id"] for x in att["questions"]])
+
     def test_overview(self):
         self.reg(project="ov")
         code, out = self.hub.call("GET", "/v1/overview")

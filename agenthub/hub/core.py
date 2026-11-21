@@ -19,7 +19,7 @@ import secrets
 import time
 
 from . import bus
-from .store import (HUMAN, KINDS, LEASE, LIVE_AFTER, OPEN_STATES, PUSH, TASK_STATES, UPDATE_KINDS,
+from .store import (HUMAN, KINDS, LEASE, LIVE_AFTER, OPEN_STATES, PUSH, STALE_AFTER, TASK_STATES, UPDATE_KINDS,
                     age, ago_ts, jloads, live_session, now, presence, scopes_of)
 
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,47}$")
@@ -75,6 +75,8 @@ def agent_card(conn, r):
     cur = conn.execute("SELECT id, title, state FROM tasks WHERE owner=? AND state IN ('working','open','review') "
                        "ORDER BY state='working' DESC, updated_at DESC LIMIT 1", (r["name"],)).fetchone()
     scopes = scopes_of(conn, r["name"])
+    stale = conn.execute("SELECT COUNT(*), MIN(created_at) FROM inbox WHERE agent=? AND delivered_at IS NULL "
+                         "AND created_at < ?", (r["name"], ago_ts(STALE_AFTER))).fetchone()
     return {
         "name": r["name"], "kind": r["kind"], "node": r["node"], "workspace": r["workspace"],
         "description": r["description"], "archived": bool(r["hidden"]),
@@ -84,6 +86,8 @@ def agent_card(conn, r):
         "current_task": dict(cur) if cur else None,
         "pending": conn.execute("SELECT COUNT(*) FROM inbox WHERE agent=? AND delivered_at IS NULL",
                                 (r["name"],)).fetchone()[0],
+        # queued and not delivered for a while: a bridge is down, or the session is not taking its items
+        "stale_queued": stale[0], "oldest_queued_s": int(age(stale[1]) or 0) if stale[0] else 0,
         "start": start_command(r["kind"], r["name"], r["workspace"], r["conversation"],
                                scopes[0]["project"] if scopes else ""),
         "last_seen": r["last_seen"],
@@ -421,8 +425,11 @@ def _others(conn, t, me):
 def _liaison_note(conn, t, w, to=""):
     li = liaison(conn, t["project"])
     if w == li and (to == HUMAN or HUMAN in (t["created_by"], t["owner"])):
+        p = t["project"] or "the project"
         return ("\n\n(You are %s's liaison: put this to the human in this conversation, then write their "
-                "answer back with hub_update / hub_close.)" % (t["project"] or "the project"))
+                "answer back with hub_update / hub_close. Project rules for the liaison, if any, are in the "
+                "shared-board note liaison-%s: hub_board(action=\"get\", type=\"note\", name=\"liaison-%s\").)"
+                % (p, t["project"] or "PROJECT", t["project"] or "PROJECT"))
     return ""
 
 
@@ -507,7 +514,12 @@ def update(conn, tid, by, kind, body, to=""):
         for w in recipients(conn, to, by, t["project"]):
             if w not in who and w != by:
                 who.append(w)
+    li = liaison(conn, t["project"])
     for w in who:
+        # The liaison stands in for the human; the human's phone should not ring for every progress note.
+        # Progress stays in the thread; plans, questions, answers, results and anything sent to="human" go through.
+        if (kind == "progress" and w == li and to != HUMAN and w not in (t["created_by"], t["owner"])):
+            continue
         enqueue(conn, w, pid, kind, "%s\n%s%s%s" % (head, body, tail, _liaison_note(conn, t, w, to)), tid)
     bus.bump()
     return task_dict(conn, t, full=True)
@@ -538,7 +550,28 @@ def overview(conn):
         projects.append(dict(p, agents=list_agents(conn, p["name"]), tasks=counts))
     loose = [a for a in list_agents(conn) if not a["scopes"]]
     archived = conn.execute("SELECT COUNT(*) FROM agents WHERE hidden=1").fetchone()[0]
-    return {"projects": projects, "unassigned": loose, "archived": archived, "version": bus.version()}
+    return {"projects": projects, "unassigned": loose, "archived": archived, "attention": attention(conn),
+            "version": bus.version()}
+
+
+def attention(conn):
+    """What needs a person now: results to review, questions nobody answered, deliveries stuck in a queue."""
+    live = "(SELECT name FROM projects WHERE archived=0)"
+    review = [dict(r) for r in conn.execute(
+        "SELECT id, title, project, owner, created_by, updated_at FROM tasks WHERE state='review' AND "
+        "(project='' OR project IN %s) ORDER BY updated_at" % live)]
+    questions = [dict(r) for r in conn.execute(
+        "SELECT t.id, t.title, t.project, t.owner, t.created_by, p.sender AS asked_by, p.recipient, p.body, p.ts "
+        "FROM tasks t JOIN posts p ON p.id = (SELECT MAX(id) FROM posts WHERE task_id=t.id) "
+        "WHERE t.state IN ('open','working') AND p.kind='question' AND (t.project='' OR t.project IN %s) "
+        "ORDER BY p.ts" % live)]
+    stale = []
+    for r in conn.execute("SELECT DISTINCT i.agent FROM inbox i JOIN agents a ON a.name=i.agent WHERE a.hidden=0 AND "
+                          "i.delivered_at IS NULL AND i.created_at < ?", (ago_ts(STALE_AFTER),)).fetchall():
+        c = agent_card(conn, agent_row(conn, r["agent"]))
+        stale.append({k: c[k] for k in ("name", "kind", "node", "presence", "push", "stale_queued", "oldest_queued_s")})
+    stale.sort(key=lambda x: -x["oldest_queued_s"])
+    return {"review": review, "questions": questions, "stale": stale}
 
 
 def maintain(conn):

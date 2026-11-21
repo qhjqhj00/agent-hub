@@ -624,6 +624,10 @@ class AdaptersV2Tests(unittest.TestCase):
         node = shutil.which("node")
         if not node:
             self.skipTest("node not installed")
+        pi_pkg = os.environ.get("PI_PKG") or os.path.expanduser(
+            "~/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent")
+        if not os.path.isdir(os.path.join(pi_pkg, "node_modules", "jiti")):
+            self.skipTest("pi not installed (set PI_PKG to its package dir)")
         ext_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "agenthub", "node", "pi", "agent-hub.ts")
 
         # Run a small Node harness (using pi's installed jiti/typebox or ts strip in node 22)

@@ -1,8 +1,8 @@
-# agent-hub v2 Setup Guide (for your Coding Agent)
+# agent-hub 3.0 Setup Guide (for your Coding Agent)
 
 > **Human:** Do not run these steps manually unless you want to. Tell your coding agent (Claude Code, Antigravity/agy, Codex, or pi):
 >
-> **“Read `SETUP.md` in this repository and set up agent-hub v2 with me.”**
+> **“Read `SETUP.md` in this repository and set up agent-hub with me.”**
 
 ---
 
@@ -11,7 +11,7 @@
 1. **Ask one short question at a time.** Never dump a 5-question form.
 2. **Inspect first, ask only what you cannot detect.** Check `tailscale status`, installed CLIs (`claude`, `agy`, `t3`, `codex`, `pi`), and `~/.agent-hub/config.json` before asking.
 3. **Show the full plan once** before writing configs or starting services, and ask for a single "go ahead".
-4. **Never start or auto-wake agent processes in tmux/PTY.** In v2, the human starts agents manually; setup only installs integrations and optional bridges (`t3-bridge`, `codex-bridge`).
+4. **Never start or auto-wake agent processes in tmux/PTY.** In 3.0, the human starts agents manually; setup only installs integrations and optional bridges (`t3-bridge`, `codex-bridge`).
 5. **Never echo secret tokens into chat logs.** Write them directly to `0600` files (`~/.agent-hub/config.json`).
 
 ---
@@ -32,7 +32,7 @@ Ask the user (one question):
 - Is this machine **(A) the hub server + a workstation**, or **(B) a workstation joining an existing hub**?
 
 ### If (A) Hub Server
-- Recommended host: a 24×7 local/LAN machine on your Tailnet (e.g. `spark-0` or `ms-01`), **not** a distant overseas VPS (v2 has no Telegram bot, and local/LAN gives `<1ms` latency for `agy` hooks and bridges).
+- Recommended host: a 24×7 local/LAN machine on your tailnet, **not** a distant VPS (3.0 has no Telegram bot, and local/LAN gives `<1ms` latency for `agy` hooks and bridges).
 - Identity mode: `tailscale` (default when on a Tailnet — zero node tokens needed) or `token` (when not using Tailscale).
 - Start hub:
   ```bash
@@ -41,7 +41,7 @@ Ask the user (one question):
 - Verify: `curl -sS --noproxy '*' http://<host>:8787/healthz`
 
 ### If (B) Joining an Existing Hub
-- Ask for the hub URL (e.g. `http://100.97.220.4:8787`) and (only if `token` mode) the node token.
+- Ask for the hub URL (e.g. `http://<hub-host>:8787`) and (only if `token` mode) the node token.
 - Write `~/.agent-hub/config.json` with `0600` permissions:
   ```json
   {

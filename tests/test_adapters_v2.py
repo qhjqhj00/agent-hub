@@ -471,6 +471,19 @@ class AdaptersV2Tests(unittest.TestCase):
         self.assertIn("resume uuid-1", adapters.start_command("codex", "sa-cx", "/ws", conversation="uuid-1"))
         self.assertIn("HUB_AGENT=sa-pi pi --session sess-9", adapters.start_command("pi", "sa-pi", "/ws", conversation="sess-9"))
 
+        liaison_prompt = adapters.onboarding_prompt("agy", "agent-hub-agy", project="agent-hub", role="liaison", liaison=True)
+        self.assertIn("人类联络人", liaison_prompt)
+        self.assertIn("liaison-agent-hub", liaison_prompt)
+
+    def test_bridge_exponential_backoff(self) -> None:
+        sess = self.hub.register_direct("backoff-agy", "agy", "/ws", "bridge", meta={"t3_thread": "t3-1"})
+        w = t3_bridge.T3SessionWorker(sess, send_fn=lambda tid, txt: (False, "down"), status_fn=lambda tid: "idle", pull_wait=0)
+        seq = []
+        for _ in range(7):
+            w._fail_count += 1
+            seq.append(w._backoff_seconds())
+        self.assertEqual(seq, [2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0])
+
     def test_setup_agy_and_pi(self) -> None:
         # Prepare fake T3 antigravity config dir + git workspace
         t3_cfg_dir = os.path.join(os.environ["T3CODE_HOME"], "userdata", "providers", "antigravity", "abc123", "config")

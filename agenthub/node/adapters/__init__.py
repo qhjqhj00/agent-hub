@@ -58,9 +58,13 @@ def onboarding_prompt(
     name: str,
     project: str = "",
     role: str = "",
+    liaison: bool = False,
 ) -> str:
     """Return the first-turn onboarding prompt to paste into a newly launched agent."""
-    return get(kind).onboarding_prompt(name=name, project=project, role=role)
+    ad = get(kind)
+    if isinstance(ad, Agy):
+        return ad.onboarding_prompt(name=name, project=project, role=role, liaison=liaison)
+    return ad.onboarding_prompt(name=name, project=project, role=role)
 
 
 __all__ = [

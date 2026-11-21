@@ -147,6 +147,7 @@ class Agy(Adapter):
         name: str,
         project: str = "",
         role: str = "",
+        liaison: bool = False,
     ) -> str:
         args = [f'name="{name}"']
         if project:
@@ -159,10 +160,20 @@ class Agy(Adapter):
             scope = f"，负责 {project} 项目的 {role}"
         elif project:
             scope = f"，项目 {project}"
-        return (
+        base = (
             f"你是 {name}{scope}。请先调用 {reg} 注册身份并查看 hub_inbox。"
-            "后续 agent-hub 的消息和任务会直接推入本对话；请统一用 hub_update / hub_send / hub_close 回复 hub，"
-            "需要用户拍板的事情在本对话里直接向用户汇报。"
+            "后续 agent-hub 的消息和任务会直接推入本对话；请统一用 hub_update / hub_send / hub_close 回复 hub。"
+        )
+        if not liaison:
+            return base + "需要用户拍板的事情在本对话里直接向用户汇报。"
+        extra_note = f"（如共享看板存在 note `liaison-{project}`，请一并读取并遵守。）" if project else ""
+        return (
+            base
+            + "你同时是本项目的【人类联络人】，请严格遵守省注意力原则："
+            "1) 普通进度更新不主动打扰用户，只在有待验收结果（review）、需要拍板的问题（question）或明确卡住时向用户汇报；"
+            "2) 每次只向用户提出一个具体问题，并附上简短选项或你的建议；"
+            "3) 收到用户答复后，立刻用 hub_update(kind=\"answer\"/\"comment\") 或 hub_close 写回 hub。"
+            + extra_note
         )
 
     def setup(

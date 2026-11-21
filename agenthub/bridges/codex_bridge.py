@@ -308,7 +308,12 @@ class CodexSessionWorker:
         self._active_turn_id = ""
         self._resumed = False
         self._thread: threading.Thread | None = None
+        self._fail_count = 0
         self.rpc.add_listener(self._on_rpc_event)
+
+    def _backoff_seconds(self) -> float:
+        """Exponential backoff: 2s -> 4s -> 8s -> 16s -> 32s -> 60s."""
+        return float(min(60, 2 << max(0, self._fail_count - 1)))
 
     @property
     def thread_id(self) -> str:
@@ -406,16 +411,20 @@ class CodexSessionWorker:
             remove_session_file(self.name)
             return False
         except (client.HubUnavailable, client.HubRefused) as e:
-            _log(self.name, "hub pull error:", e)
-            self.stop_event.wait(3.0)
+            self._fail_count += 1
+            delay = self._backoff_seconds()
+            _log(self.name, "hub pull error (#%d, retry in %.0fs):" % (self._fail_count, delay), e)
+            self.stop_event.wait(delay)
             return True
 
         if not items:
+            self._fail_count = 0
             return True
 
         text = _render_batch(self.name, items)
         try:
             self.deliver_text(text)
+            self._fail_count = 0
             ids = [i["id"] for i in items if "id" in i]
             self.http.delivered(ids)
             _log(self.name, "delivered", ids, "-> codex thread", self.thread_id)
@@ -423,8 +432,10 @@ class CodexSessionWorker:
             remove_session_file(self.name)
             return False
         except Exception as e:
-            _log(self.name, "deliver failed (keeping undelivered):", e)
-            self.stop_event.wait(3.0)
+            self._fail_count += 1
+            delay = self._backoff_seconds()
+            _log(self.name, "deliver failed (#%d, retry in %.0fs, keeping undelivered):" % (self._fail_count, delay), e)
+            self.stop_event.wait(delay)
         return True
 
     def start(self) -> None:

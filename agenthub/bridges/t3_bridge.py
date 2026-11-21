@@ -96,6 +96,11 @@ class T3SessionWorker:
         self.stop_event = threading.Event()
         self._last_state: str | None = None
         self._thread: threading.Thread | None = None
+        self._fail_count = 0
+
+    def _backoff_seconds(self) -> float:
+        """Exponential backoff: 2s -> 4s -> 8s -> 16s -> 32s -> 60s."""
+        return float(min(60, 2 << max(0, self._fail_count - 1)))
 
     def get_t3_thread(self) -> str:
         meta = self.sess.get("meta") or {}
@@ -140,16 +145,20 @@ class T3SessionWorker:
             remove_session_file(self.name)
             return False
         except (client.HubUnavailable, client.HubRefused) as e:
-            _log(self.name, "hub pull error:", e)
-            self.stop_event.wait(3.0)
+            self._fail_count += 1
+            delay = self._backoff_seconds()
+            _log(self.name, "hub pull error (#%d, retry in %.0fs):" % (self._fail_count, delay), e)
+            self.stop_event.wait(delay)
             return True
 
         if not items:
+            self._fail_count = 0
             return True
 
         text = _render_batch(self.name, items)
         ok, info = self.send_fn(tid, text)
         if ok:
+            self._fail_count = 0
             ids = [i["id"] for i in items if "id" in i]
             try:
                 self.http.delivered(ids)
@@ -163,8 +172,10 @@ class T3SessionWorker:
             _log(self.name, "delivered", ids, "-> t3 thread", tid)
         else:
             # Never mark delivered when t3 thread send fails; items re-appear after 60s lease.
-            _log(self.name, "t3 thread send failed (keeping undelivered):", info)
-            self.stop_event.wait(3.0)
+            self._fail_count += 1
+            delay = self._backoff_seconds()
+            _log(self.name, "t3 thread send failed (#%d, retry in %.0fs, keeping undelivered):" % (self._fail_count, delay), info)
+            self.stop_event.wait(delay)
         return True
 
     def start(self) -> None:

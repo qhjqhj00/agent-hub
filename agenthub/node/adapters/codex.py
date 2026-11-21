@@ -1,20 +1,25 @@
-"""OpenAI Codex CLI.
+"""OpenAI Codex CLI adapter (v2).
 
-Tools come from `agenthub mcp --kind codex`, registered with `codex mcp add`.
-Codex has no way to inject events into a running session, so push goes
-through the `agenthub run codex` wrapper, which types into its terminal.
-Conversations are its rollout files (~/.codex/sessions/**/rollout-*-<uuid>.jsonl),
-resumed with `codex resume <uuid>`.
+Push:
+- External bridge (`agenthub codex-bridge`) connects to the shared local
+  `codex app-server` daemon via JSON-RPC 2.0, listens to `thread/status/changed`,
+  and sends `turn/start` / `turn/steer`.
+- Humans attach simultaneously via `codex --remote unix://~/.codex/app-server-control/app-server-control.sock`.
+
+Tools:
+- Native MCP (`codex mcp add agent-hub -- agenthub mcp --kind codex`).
 """
+from __future__ import annotations
+
 import glob
 import json
 import os
 import re
-import shutil
+import shlex
 import subprocess
-import time
+from typing import Any
 
-from .base import Adapter, _short, mcp_command
+from .base import Adapter, mcp_command
 
 CODEX_HOME = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
 UUID = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$")
@@ -24,60 +29,38 @@ class Codex(Adapter):
     kind = "codex"
     title = "OpenAI Codex CLI"
     binary = "codex"
+    push = "bridge"
     tools = "mcp"
-    # the composer prompt; while working the status line says "esc to interrupt"
-    ready_markers = ("› ",)
-    busy_markers = ("esc to interrupt",)
-    blockers = Adapter.blockers + ("Would you like to", "Yes, proceed", "Do you trust the contents",
-                                   "Allow Codex to")
-    dialogs = (
-        ("Do you trust the contents of this directory", "Yes, continue"),
-        ("Update available!", "Skip"),
-    )
-    # unattended agents should not stop for every command: sandboxed, asks only when it must
-    default_args = ("--ask-for-approval", "on-request", "--sandbox", "workspace-write")
-    instructions_file = os.path.join(CODEX_HOME, "AGENTS.md")
-    skills_dir = os.path.join(CODEX_HOME, "skills")
-    resume_hint = "codex resume <session uuid>"
 
-    def argv(self, resume=None, prompt=None, extra=()):
-        cmd = ["codex"]
-        if resume:
-            cmd += ["resume", resume]
-        cmd += self.extra_args() + list(extra)
-        if prompt:
-            cmd.append(prompt)
+    def start_command(
+        self,
+        name: str,
+        workspace: str,
+        conversation: str = "",
+        project: str = "",
+    ) -> str:
+        _ = name, project
+        ws = shlex.quote(workspace) if workspace else "."
+        sock = "unix://$HOME/.codex/app-server-control/app-server-control.sock"
+        cmd = f"cd {ws} && codex --remote {sock}"
+        if conversation:
+            cmd += f" resume {shlex.quote(conversation)}"
         return cmd
 
-    def _rollout(self, conv):
-        hits = glob.glob(os.path.join(CODEX_HOME, "sessions", "*", "*", "*", "rollout-*%s.jsonl" % conv))
-        return hits[0] if hits else None
-
-    def resumable(self, cwd, conv):
-        if not conv or not re.match(r"^[0-9a-f\-]{36}$", conv):
-            return False, "no previous session"
-        path = self._rollout(conv)
-        if not path:
-            return False, "previous session not on this node"
-        if time.time() - os.stat(path).st_mtime > 7 * 86400:
-            return False, "previous session older than 7 days"
-        return True, ""
-
-    def find_conversation(self, pid, cwd, since):
-        # Linux: the rollout file codex keeps open
-        fd_dir = "/proc/%d/fd" % pid
+    def find_conversation(self, pid: int, cwd: str, since: float) -> str:
+        """Discover the Codex rollout UUID open by `pid` (Linux /proc) or newest in `cwd`."""
+        fd_dir = f"/proc/{pid}/fd"
         if os.path.isdir(fd_dir):
             for pid_ in [pid] + _children(pid):
                 try:
-                    for f in os.listdir("/proc/%d/fd" % pid_):
-                        target = os.readlink("/proc/%d/fd/%s" % (pid_, f))
+                    for f in os.listdir(f"/proc/{pid_}/fd"):
+                        target = os.readlink(f"/proc/{pid_}/fd/{f}")
                         m = UUID.search(target)
                         if m and "rollout-" in target:
                             return m.group(1)
                 except OSError:
                     continue
-        # elsewhere: the newest rollout started after us in this directory
-        best = None
+        best: tuple[float, str] | None = None
         for path in glob.glob(os.path.join(CODEX_HOME, "sessions", "*", "*", "*", "rollout-*.jsonl")):
             try:
                 st = os.stat(path)
@@ -86,7 +69,7 @@ class Codex(Adapter):
             if st.st_mtime < since:
                 continue
             try:
-                with open(path) as fh:
+                with open(path, encoding="utf-8") as fh:
                     meta = json.loads(fh.readline()).get("payload") or {}
             except (OSError, ValueError):
                 continue
@@ -99,36 +82,32 @@ class Codex(Adapter):
             return m.group(1) if m else ""
         return ""
 
-    def setup(self, agenthub_cmd, **_):
-        out = []
+    def setup(self, agenthub_cmd: list[str], **_: Any) -> list[str]:
         if not self.available():
             return ["codex not on PATH; skipped"]
         cmd = mcp_command(agenthub_cmd, "codex")
         subprocess.run(["codex", "mcp", "remove", "agent-hub"], capture_output=True, text=True, timeout=60)
-        env = ["--env", "AGENTHUB_HOME=%s" % os.environ["AGENTHUB_HOME"]] if os.environ.get("AGENTHUB_HOME") else []
-        r = subprocess.run(["codex", "mcp", "add", "agent-hub"] + env + ["--"] + cmd, capture_output=True, text=True,
-                           timeout=60)
-        out.append("codex: MCP server agent-hub -> %s" % " ".join(cmd) if r.returncode == 0 else
-                   "codex mcp add failed: %s" % (r.stderr or r.stdout).strip()[-300:])
-        return out + Adapter.setup(self, agenthub_cmd)
+        env = ["--env", f"AGENTHUB_HOME={os.environ['AGENTHUB_HOME']}"] if os.environ.get("AGENTHUB_HOME") else []
+        r = subprocess.run(
+            ["codex", "mcp", "add", "agent-hub"] + env + ["--"] + cmd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if r.returncode == 0:
+            return [f"codex: MCP server agent-hub -> {' '.join(cmd)}"]
+        return [f"codex mcp add failed: {(r.stderr or r.stdout).strip()[-300:]}"]
 
-    def teardown(self):
-        out = []
-        if self.available():
-            r = subprocess.run(["codex", "mcp", "remove", "agent-hub"], capture_output=True, text=True, timeout=60)
-            if r.returncode == 0:
-                out.append("codex: MCP server agent-hub removed")
-        return out + Adapter.teardown(self)
+    def teardown(self, **_: Any) -> list[str]:
+        if not self.available():
+            return []
+        r = subprocess.run(["codex", "mcp", "remove", "agent-hub"], capture_output=True, text=True, timeout=60)
+        return ["codex: MCP server agent-hub removed"] if r.returncode == 0 else []
 
 
-def _children(pid):
-    out = []
+def _children(pid: int) -> list[int]:
     try:
-        with open("/proc/%d/task/%d/children" % (pid, pid)) as fh:
-            out = [int(x) for x in fh.read().split()]
+        with open(f"/proc/{pid}/task/{pid}/children", encoding="utf-8") as fh:
+            return [int(x) for x in fh.read().split()]
     except (OSError, ValueError):
-        pass
-    return out
-
-
-__all__ = ["Codex", "shutil", "_short"]
+        return []

@@ -1,6 +1,6 @@
 {
   "name": "agent-hub",
-  "description": "Connects a Claude Code session to agent-hub: identity, task delegation to other coding agents, live push of tasks and replies, permission relay.",
+  "description": "Connects a Claude Code session to agent-hub: identity, task delegation to other coding agents, live push of tasks and replies, the shared board.",
   "version": "2.0.0",
   "author": {
     "name": "agent-hub"

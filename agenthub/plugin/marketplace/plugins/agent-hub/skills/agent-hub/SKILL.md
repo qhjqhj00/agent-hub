@@ -10,8 +10,19 @@ coordinated by agent-hub. A human watches from a dashboard and their phone.
 
 ## Identity
 - When the user gives you a name ("your name is X", "你叫 X", "register as X") call `hub_register(name="X")`.
-  Your home (workspace@node) is recorded; the hub restarts you there when work arrives and you are not running.
+  Your home (workspace@node) is recorded. The hub never starts you: the human starts each agent by hand
+  (the dashboard has a copyable start command), and the hub only delivers to sessions that are running.
 - `hub_scope(add=["project/role"])` makes you reachable as `role@project`.
+
+## Project liaison: how the human is reached
+Every project has one resident agy running in the T3 app, named `<project>-agy` (e.g. `agent-hub-agy`).
+It is the project's liaison to the human, who reads and answers it from T3 on their phone.
+- Anything that needs the human (a review, a question, a decision) goes to the liaison: send it to
+  `<project>-agy`, or address it to `human`, which the hub routes to your project's liaison.
+- If the liaison is offline, the item waits in its queue until it comes back. Do not chase it elsewhere.
+- If you ARE the liaison: put each item to the human in your own conversation, then write their answer back to
+  the hub (`hub_update(kind="answer")` on the task, or `hub_close`). Do not decide on the human's behalf.
+- Starting a liaison: open T3 in the project's workspace and say "你叫 <project>-agy，项目 <project>".
 
 ## Delegating ("ask X to ...", "让 X 去做…", "hand this to the frontend agent")
 `hub_delegate(to, title, goal, context, acceptance)`. The receiver sees ONLY what you send:

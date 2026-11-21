@@ -2,9 +2,9 @@
 
 ## Requirements
 
-- **Hub**: Python 3.8+ and `git` (it serves the skill marketplace over git).
-- **Nodes**: Python 3.8+, `tmux` (to start agents when work arrives), and the agent CLIs you
-  use, already logged in. Linux or macOS.
+- **Hub**: Python 3.10+ and `git` (it serves the skill marketplace over git).
+- **Nodes**: Python 3.10+ and the agent CLIs you use, already logged in. Linux or macOS.
+  For agy, T3 Code (`t3 serve`); for the Codex bridge, `codex app-server`.
 
 No other dependencies, and nothing to compile.
 
@@ -13,19 +13,44 @@ No other dependencies, and nothing to compile.
 ```bash
 curl -fsSL https://raw.githubusercontent.com/qhjqhj00/agent-hub/main/install.sh | sh
 agenthub up            # foreground; Ctrl-C stops it
-agenthub up --service  # or: as systemd (Linux) / launchd (macOS) user services
 ```
 
 The hub binds `127.0.0.1:8787` and stores its data in `~/.agent-hub/hub`. `agenthub up` writes
 the admin token into `~/.agent-hub/config.json`, so this machine's clients are logged in. It
 also sets up every agent CLI it finds; `--no-setup` skips that, and `agenthub setup` does it later.
 
+## Running the hub as a service
+
+A systemd user unit (`~/.config/systemd/user/agent-hub.service`):
+
+```ini
+[Unit]
+Description=agent-hub
+After=network-online.target
+
+[Service]
+Environment=HUB_IDENTITY=token
+Environment=HUB_DATA=%h/.agent-hub/hub
+ExecStart=%h/.local/bin/agenthub serve --host 0.0.0.0 --port 8787
+Restart=always
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload && systemctl --user enable --now agent-hub
+sudo loginctl enable-linger $USER          # keep it running after logout
+journalctl --user -u agent-hub -f          # logs
+```
+
+On macOS, a launchd agent running the same `agenthub serve` command does the same job.
+
 ## Several machines on one network (LAN, VPN, WireGuard, ...)
 
 On the hub machine:
 
 ```bash
-agenthub up --host 0.0.0.0 --service
 agenthub nodes add laptop      # one token per machine; prints its installer line
 agenthub nodes add gpu-01
 ```
@@ -36,25 +61,37 @@ On each node:
 curl -fsSL http://HUB:8787/install.sh | sh -s -- --join http://HUB:8787 <node token>
 ```
 
-Manage tokens with `agenthub nodes tokens` and `agenthub nodes revoke gpu-01`. A revoked node
-gets 401 on its next request.
+The installer puts `agenthub` in `~/.local/bin`, saves the hub address and token, and runs
+`agenthub setup` for the agent CLIs it finds. Manage tokens with `agenthub nodes` and
+`agenthub nodes revoke gpu-01`; a revoked node gets 401 on its next request.
 
-Set `HUB_URL=http://hub.example:8787` on the hub if it is reached under a different name than
-the one in the requests (behind NAT, or a proxy). Installer and notification links use it.
+Set `HUB_URL=http://hub.example:8787` on the hub if nodes reach it under a different name than
+the one in the requests (NAT, a proxy). The installer links use it.
+
+## Per-machine extras
+
+- **agy in T3**: run `agenthub setup agy --workspace <dir>` once per workspace (it writes
+  `.agents/hooks.json`, kept out of git), and keep one `agenthub t3-bridge` running next to
+  `t3 serve`. The bridge only delivers to T3 threads of agents that registered.
+- **Codex**: run `codex app-server daemon start` and `agenthub codex-bridge`, then start Codex
+  with `codex --remote unix://$HOME/.codex/app-server-control/app-server-control.sock`.
+- **pi**: `agenthub setup pi` installs the extension; nothing else runs.
+
+Bridges never start agents. Run them in a terminal, or as user services like the hub above.
 
 ## Tailscale
 
 If every machine is on one tailnet, you can drop node tokens:
 
 ```bash
-agenthub up --host <tailnet ip> --identity tailscale --service
+agenthub serve --host <tailnet ip> --identity tailscale
 # on each node
 curl -fsSL http://<hub>:8787/install.sh | sh -s -- --join http://<hub>:8787 ""
 ```
 
-The hub then asks `tailscaled` who is calling (`tailscale whois`), and every device on the
-tailnet is trusted. The dashboard still needs the admin token unless you open it from a tailnet
-device. Use tailnet ACLs to decide who may reach the hub.
+The hub asks `tailscaled` who is calling (`tailscale whois`), and every device on the tailnet is
+trusted as a node. Admin actions on the dashboard still need the admin token. Use tailnet ACLs to
+decide who may reach the hub.
 
 ## Docker (hub only)
 
@@ -63,8 +100,7 @@ docker compose up -d
 docker compose exec hub python3 bin/agenthub token      # the admin token
 ```
 
-Nodes cannot run in a container in any useful way, because hubd starts agents in tmux on its
-own host. Join them as above.
+Agents run on your machines, not in the container. Join nodes as above.
 
 ## TLS / reverse proxy
 
@@ -83,41 +119,28 @@ location / {
 
 Then set `HUB_URL=https://hub.example.com` and have nodes join `https://hub.example.com`.
 
-## Notifications
-
-- **Telegram** (two-way: answer questions, accept results, approve permission prompts):
-  1. Create a bot with @BotFather.
-  2. Set `TELEGRAM_BOT_TOKEN` (or write it to `~/.agent-hub/hub/telegram.token`) and restart the hub.
-  3. Send the bot `/pair <code>`; the code is on the dashboard's Guide page.
-- **Webhooks** (one-way): set `HUB_WEBHOOK_URL`, comma-separated for several. Slack, Discord,
-  Feishu/Lark, DingTalk and ntfy URLs are recognised; anything else gets JSON
-  `{kind, task_id, from, text, url}`. `HUB_WEBHOOK_FORMAT` forces a format.
-
-## Services and logs
-
-| | Linux | macOS |
-|---|---|---|
-| hub | `systemctl --user status agent-hub` | `launchctl list dev.agent-hub.agent-hub` |
-| node | `systemctl --user status agent-hubd` | `launchctl list dev.agent-hub.agent-hubd` |
-| logs | `journalctl --user -u agent-hubd`, `~/.agent-hub/*.log` | `~/.agent-hub/agent-hubd.log` |
-
-On Linux, run `sudo loginctl enable-linger $USER` so services survive logout. Restarting hubd
-does not kill the agents it started: they run in their own tmux scopes.
-
-`agenthub doctor` checks the config, the hub connection and your token, tmux, and the agent CLIs.
-
 ## Upgrades
 
-- Hub from source or the GitHub installer: run the installer again (or `git pull`), then restart
-  the hub service.
-- Nodes installed from the hub: nothing to do. hubd fetches the hub's `agenthub.pyz` every 10
-  minutes and restarts itself.
-- pip installs (`pipx install git+https://github.com/qhjqhj00/agent-hub`): `pipx upgrade agent-hub-cli`.
+- Hub: run the installer again (or `git pull`), then restart the hub.
+- Nodes: run the installer line again; it fetches the hub's `agenthub.pyz`. Claude Code picks
+  up a new plugin version at its next start (`agenthub setup claude` turns on marketplace
+  auto-update).
 
-The database schema only grows. A newer hub opens an older database in place.
+The schema only grows: a newer hub opens an older 3.x database in place. A 2.x database is
+moved with `agenthub migrate --from <2.x hub.db>` into a new data directory.
+
+## Moving from a 2.x hub
+
+1. Stop the 2.x hub, then copy its database (`sqlite3 hub.db ".backup v2.db"`).
+2. On the new hub machine: `agenthub migrate --from v2.db` (the old file is opened read-only),
+   then start the hub. Fix agent kinds it lists (`agenthub agent-set NAME --kind agy`) and set
+   each project's liaison (`agenthub project NAME --liaison NAME-agy`).
+3. On every node: run the installer with `--join`, then stop and disable the old `agent-hubd`
+   service (`systemctl --user disable --now agent-hubd`).
+4. Restart the agents; `agenthub start NAME` prints each one's command.
 
 ## Backups
 
-Copy `~/.agent-hub/hub/` while the hub is stopped, or use
-`sqlite3 hub.db ".backup backup.db"` while it runs. It holds the database (tasks, vault),
-the admin token and the skill marketplace.
+Copy `~/.agent-hub/hub/` while the hub is stopped, or use `sqlite3 hub.db ".backup backup.db"`
+while it runs. It holds the database (tasks, threads, the vault), the admin token and the skill
+marketplace.

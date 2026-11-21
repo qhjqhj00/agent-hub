@@ -1,11 +1,12 @@
 """Claude Code plugin hooks (`agenthub cc-hook start|prompt`).
 
   start   SessionStart. `/resume` inside a running claude switches it to another
-          conversation, but the channel server keeps the session id claude started
-          with. Hand it the conversation id (it finds the file by its claude's pid).
-  prompt  UserPromptSubmit. Sessions started with `agenthub run claude` get hub items
-          pushed; a plain `claude` would never hear about them, so on each prompt we
-          hand over whatever is queued. Best effort: a slow or absent hub never blocks."""
+          conversation under the same MCP server. Hand that server the new conversation
+          id (it finds the file by its claude's pid).
+  prompt  UserPromptSubmit. A claude started without HUB_CHANNEL=1 gets nothing pushed,
+          so on each prompt show whatever is queued for it. Best effort: a slow or
+          absent hub never blocks the prompt.
+"""
 import json
 import os
 import subprocess
@@ -27,35 +28,51 @@ def ppid(pid):
             return 0
 
 
-def start():
-    d = json.load(sys.stdin)
-    if not d.get("session_id"):
-        return
+def _claude_pid():
+    """The claude this hook runs under: the nearest ancestor with a .chan mark."""
     pid = os.getppid()
     for _ in range(4):  # claude -> (shell) -> this hook
         if pid <= 1:
-            return
+            return 0
         if os.path.exists(os.path.join(RUN, "%d.chan" % pid)):
-            tmp = os.path.join(RUN, "%d.conv.tmp" % pid)
-            with open(tmp, "w") as fh:
-                json.dump({"conversation": d["session_id"], "source": d.get("source") or "",
-                           "transcript": d.get("transcript_path") or ""}, fh)
-            os.replace(tmp, os.path.join(RUN, "%d.conv" % pid))
-            return
+            return pid
         pid = ppid(pid)
+    return 0
+
+
+def start():
+    d = json.load(sys.stdin)
+    pid = _claude_pid()
+    if not d.get("session_id") or not pid:
+        return
+    tmp = os.path.join(RUN, "%d.conv.tmp" % pid)
+    with open(tmp, "w") as fh:
+        json.dump({"conversation": d["session_id"], "source": d.get("source") or "",
+                   "transcript": d.get("transcript_path") or ""}, fh)
+    os.replace(tmp, os.path.join(RUN, "%d.conv" % pid))
 
 
 def prompt():
-    if os.environ.get("HUB_CHANNEL") == "1" or os.environ.get("HUB_SESSION"):
-        return  # pushed already: by the channel, or typed in by the `agenthub run` wrapper
-    sid = json.load(sys.stdin).get("session_id") or os.environ.get("CLAUDE_CODE_SESSION_ID", "")
-    items = client.call("GET", "/v1/sessions/%s/pull?wait=0&autoack=1" % sid, timeout=5).get("items", [])
-    items = [i for i in items if i.get("kind") != "verdict"]
+    if os.environ.get("HUB_CHANNEL") == "1":
+        return  # the channel pushes already
+    pid = _claude_pid()
+    if not pid:
+        return
+    try:
+        name = json.load(open(os.path.join(RUN, "%d.chan" % pid))).get("name")
+    except (OSError, ValueError):
+        return
+    sess = client.read_session(name) if name else None
+    if not sess:
+        return
+    items = client.session_call(sess, "GET", "/v1/sessions/%s/pull?wait=0" % sess["session_id"], timeout=5)["items"]
     if items:
-        print("agent-hub: %d queued item(s) for you (start with `agenthub run claude` to get them pushed live):"
+        print("agent-hub: %d queued item(s) for you (start claude with HUB_CHANNEL=1 to get them pushed live):"
               % len(items))
         for i in items:
-            print("---\n" + i["content"])
+            print("---\n" + i["text"])
+        client.session_call(sess, "POST", "/v1/sessions/%s/delivered" % sess["session_id"],
+                            {"ids": [i["id"] for i in items]}, timeout=5)
 
 
 def main(which):

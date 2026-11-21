@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "Coordinate coding agents (Claude Code, Codex, pi, Gemini CLI, opencode) on one machine or many: delegation, live push, wake-on-work, shared secrets and skills."
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 dependencies = []
 keywords = ["claude-code", "codex", "coding-agents", "multi-agent", "mcp", "orchestration"]
 classifiers = [

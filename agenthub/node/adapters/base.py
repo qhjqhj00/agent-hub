@@ -1,119 +1,99 @@
-"""What the hub needs to know about one kind of coding agent.
+"""Base adapter definition for agent-hub v2.
 
-An adapter answers four questions for its CLI:
+v2 removes PTY screen-scraping (`ready_markers`, `busy_markers`, `blockers`,
+`dialogs`) and tmux auto-waking. Each adapter describes how to:
 
-  start    the command line (`argv`), with the hub's identity and an optional
-           conversation to resume
-  push     how work reaches a running session: "channel" (the agent has a native
-           way to inject events -- Claude Code) or "pty" (the `agenthub run`
-           wrapper types the text into the agent's terminal when it is idle)
-  tools    "mcp" (hub_* tools through `agenthub mcp`) or "cli" (the agent runs
-           `agenthub ...` in its shell)
-  screen   how to tell, from its terminal, that it is ready for input, busy, or
-           sitting on a dialog -- for hubd's wake autopilot and for safe typing
-
-and `setup()` installs the integration (MCP config, instructions block, skills).
+- detect the CLI (`available`, `version`)
+- install / remove the hub integration (`setup`, `teardown`)
+- generate the user's copy-pasteable `start_command` and `onboarding_prompt`
 """
+from __future__ import annotations
+
 import os
 import re
+import shlex
 import shutil
 import subprocess
-
-from .. import instructions
+from typing import Any
 
 
 class Adapter:
-    kind = "generic"
-    title = "Generic CLI"
-    binary = None
-    push = "pty"
-    tools = "cli"
-    # Substrings on the last lines of the screen. Ready: its input box is up. Blockers: a dialog or
-    # confirmation is waiting, so typing would answer it. Busy: it is working.
-    ready_markers = ()
-    blockers = ("Enter to confirm", "Esc to cancel", "Press enter to continue", "(y/n)", "[y/N]", "[Y/n]")
-    busy_markers = ()
-    # Start-up dialogs hubd may answer on its own: (text that identifies it, option to pick).
-    dialogs = ()
-    instructions_file = None   # global instructions file the setup block goes into
-    skills_dir = None          # where shared skills are copied, for agents that read SKILL.md dirs
-    resume_hint = ""
+    kind = "other"
+    title = "Generic Agent"
+    binary: str | None = None
+    push = "pull"          # "channel" | "bridge" | "pull"
+    tools = "cli"          # "mcp" | "extension" | "cli"
 
-    # ---------------------------------------------------------------- presence on this node
-    def available(self):
+    def available(self) -> bool:
         return bool(self.binary and shutil.which(self.binary))
 
-    def version(self):
-        if not self.available():
+    def version(self) -> str:
+        if not self.available() or not self.binary:
             return ""
         try:
             out = subprocess.run([self.binary, "--version"], capture_output=True, text=True, timeout=10)
-            m = re.search(r"\d+\.\d+[\w.\-]*", out.stdout + out.stderr)
+            m = re.search(r"\d+\.\d+[\w.\-]*", (out.stdout or "") + (out.stderr or ""))
             return m.group(0) if m else "?"
         except Exception:
             return "?"
 
-    # ---------------------------------------------------------------- start
-    def argv(self, resume=None, prompt=None, extra=()):
-        raise NotImplementedError
+    def start_command(
+        self,
+        name: str,
+        workspace: str,
+        conversation: str = "",
+        project: str = "",
+    ) -> str:
+        ws = shlex.quote(workspace) if workspace else "."
+        bin_name = self.binary or self.kind
+        return f"cd {ws} && HUB_AGENT={shlex.quote(name)} {bin_name}"
 
-    def env(self, agent):
-        return {}
+    def onboarding_prompt(
+        self,
+        name: str,
+        project: str = "",
+        role: str = "",
+    ) -> str:
+        args = [f'name="{name}"']
+        if project:
+            args.append(f'project="{project}"')
+        if role:
+            args.append(f'role="{role}"')
+        reg = f"hub_register({', '.join(args)})"
+        scope = ""
+        if project and role:
+            scope = f"，负责 {project} 项目的 {role}"
+        elif project:
+            scope = f"，项目 {project}"
+        return (
+            f"你是 {name}{scope}。请先调用 {reg} 注册身份并查看 hub_inbox。"
+            "后续 agent-hub 的消息和任务会直接推入本会话，请统一调用 hub_update / hub_send / hub_close 回复 hub。"
+        )
 
-    def extra_args(self):
-        """User-chosen flags for every start: HUB_<KIND>_ARGS."""
-        import shlex
-        v = os.environ.get("HUB_%s_ARGS" % self.kind.upper().replace("-", "_"))
-        return shlex.split(v) if v is not None else list(self.default_args)
+    def setup(self, agenthub_cmd: list[str], **kwargs: Any) -> list[str]:
+        _ = agenthub_cmd, kwargs
+        return [f"{self.kind}: nothing to set up"]
 
-    default_args = ()
+    def teardown(self, **kwargs: Any) -> list[str]:
+        _ = kwargs
+        return [f"{self.kind}: nothing to remove"]
 
-    def resumable(self, cwd, conversation):
-        """(ok, why): is it worth resuming this conversation here?"""
-        return False, "resume not supported for %s" % self.kind
-
-    def find_conversation(self, pid, cwd, since):
-        """The id of the conversation the agent process `pid` is in, once it has one."""
-        return ""
-
-    # ---------------------------------------------------------------- screen
-    def ready(self, screen):
-        tail = "\n".join(screen.rstrip().splitlines()[-12:])
-        if any(b in tail for b in self.blockers):
-            return False
-        if any(b in tail for b in self.busy_markers):
-            return False
-        # terminals drop trailing blanks, so "> " is matched as ">"
-        return any(m.rstrip() in tail for m in self.ready_markers) if self.ready_markers else True
-
-    # ---------------------------------------------------------------- setup
-    def setup(self, agenthub_cmd):
-        """Install the integration; returns lines describing what was done."""
-        out = []
-        if self.instructions_file:
-            path = os.path.expanduser(self.instructions_file)
-            changed = instructions.upsert(path, cli=(self.tools == "cli"))
-            out.append("%s instructions block in %s" % ("wrote" if changed else "kept", _short(path)))
-        return out
-
-    def teardown(self):
-        out = []
-        if self.instructions_file:
-            path = os.path.expanduser(self.instructions_file)
-            if instructions.remove(path):
-                out.append("removed instructions block from %s" % _short(path))
-        return out
-
-    def describe(self):
-        return {"kind": self.kind, "title": self.title, "binary": self.binary, "push": self.push,
-                "tools": self.tools, "available": self.available()}
+    def describe(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "title": self.title,
+            "binary": self.binary,
+            "push": self.push,
+            "tools": self.tools,
+            "available": self.available(),
+        }
 
 
-def _short(p):
+def _short(path: str) -> str:
     home = os.path.expanduser("~")
-    return "~" + p[len(home):] if p.startswith(home) else p
+    return "~" + path[len(home):] if path.startswith(home) else path
 
 
-def mcp_command(agenthub_cmd, kind):
+def mcp_command(agenthub_cmd: list[str], kind: str) -> list[str]:
     """The MCP server command line for an agent's config: [program, args...]."""
     return list(agenthub_cmd) + ["mcp", "--kind", kind]

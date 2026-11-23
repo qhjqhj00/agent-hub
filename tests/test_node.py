@@ -78,6 +78,43 @@ class MCPTest(unittest.TestCase):
         code, card = self.hub.call("GET", "/v1/agents/cx1")
         self.assertNotEqual(card["presence"], "live")
 
+    def test_agy_session_bound_to_t3_thread_survives_exit_and_is_adopted(self):
+        env = {"HUB_KIND": "agy", "ANTIGRAVITY_CONVERSATION_ID": "conv-t3a", "CLAUDE_PROJECT_DIR": "/w/t3a"}
+        m = MCP(self.hub, env)
+        m.rpc("initialize", {"protocolVersion": "2025-06-18"})
+        text, err = m.tool("hub_register", name="t3a-agy")
+        self.assertFalse(err, text)
+        path = os.path.join(self.hub.env["AGENTHUB_HOME"], "sessions", "t3a-agy.json")
+        sess = json.load(open(path))
+        sess["meta"] = {"t3_thread": "thread-t3a"}  # what agy-hook writes after the first turn
+        with open(path, "w") as fh:
+            json.dump(sess, fh)
+        m.close()  # T3 reaped the idle agy: stdin EOF
+        self.assertTrue(os.path.exists(path))
+        code, _ = self.hub.call("POST", "/v1/sessions/%s/beat" % sess["session_id"], {}, session=sess["token"])
+        self.assertEqual(code, 200)
+        # T3 wakes the thread: a new agy, a new MCP server, no hub_register needed
+        m2 = MCP(self.hub, env)
+        m2.rpc("initialize", {"protocolVersion": "2025-06-18"})
+        text, err = m2.tool("hub_send", to="t3a-agy", body="still me")
+        self.assertFalse(err, text)
+        self.assertEqual(json.load(open(path))["session_id"], sess["session_id"])
+        text, err = m2.tool("hub_register", name="t3a-agy")  # re-registering in place is not a 409
+        self.assertFalse(err, text)
+        m2.close()
+
+    def test_agy_session_without_t3_thread_ends_on_exit(self):
+        m = MCP(self.hub, {"HUB_KIND": "agy", "ANTIGRAVITY_CONVERSATION_ID": "conv-t3b", "CLAUDE_PROJECT_DIR": "/w/t3b"})
+        m.rpc("initialize", {"protocolVersion": "2025-06-18"})
+        text, err = m.tool("hub_register", name="t3b-agy")
+        self.assertFalse(err, text)
+        path = os.path.join(self.hub.env["AGENTHUB_HOME"], "sessions", "t3b-agy.json")
+        self.assertTrue(os.path.exists(path))
+        m.close()
+        self.assertFalse(os.path.exists(path))
+        code, card = self.hub.call("GET", "/v1/agents/t3b-agy")
+        self.assertNotEqual(card["presence"], "live")
+
     def test_channel_push_and_delivered(self):
         m = MCP(self.hub, {"HUB_KIND": "claude", "HUB_CHANNEL": "1", "HUB_AGENT": "cc1"})
         init = m.rpc("initialize", {"protocolVersion": "2025-06-18"})

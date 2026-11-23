@@ -11,7 +11,8 @@ Claude Code starts it through the agent-hub plugin; agy and Codex through the co
     conversation as <channel source="agent-hub"> events (push=channel)
   * agy / Codex: push=bridge -- t3-bridge / codex-bridge deliver; this process only beats
   * anything else: push=pull -- the agent calls hub_inbox
-  * ends the session when its agent exits (stdin closes), which frees the name at once
+  * ends the session when its agent exits (stdin closes), which frees the name at once --
+    except an agy session bound to a T3 thread, which the next agy process in that thread adopts
 """
 import json
 import os
@@ -160,6 +161,57 @@ def end_session(s=None):
     client.remove_session(s["name"], s["session_id"])
     if state["sess"] is s:
         state["sess"] = None
+
+
+def _persistent(s):
+    """An agy session bound to a T3 thread outlives this process: T3 reaps an idle `agy acp`
+    after ~30 min but the thread lives on, and t3-bridge keeps the session (it ends it once the
+    thread is deleted or archived). meta.t3_thread may have been written later by agy-hook."""
+    if KIND != "agy" or not s:
+        return False
+    d = client.read_session(s["name"]) or {}
+    return d.get("session_id") == s["session_id"] and bool((d.get("meta") or {}).get("t3_thread"))
+
+
+def release():
+    """This process is exiting (stdin closed or a signal): end the session unless it persists."""
+    s = state["sess"]
+    if _persistent(s):
+        log("exit: keeping", s["name"], s["session_id"], "for its T3 thread")
+        state["sess"] = None
+        return
+    end_session(s)
+
+
+def adopt():
+    """agy woken in a T3 thread starts a fresh MCP server: take over the session the last one
+    left behind (same T3 thread / conversation, else the only bound session for this cwd)."""
+    if KIND != "agy":
+        return None
+    conv = state["conv"]
+    t3 = _t3_thread(conv)
+    bound = [d for d in client.sessions() if d.get("kind") == "agy" and d.get("session_id") and d.get("token")
+             and (d.get("meta") or {}).get("t3_thread")]
+    hit = [d for d in bound if (t3 and d["meta"]["t3_thread"] == t3) or (conv and d.get("conversation") == conv)]
+    if not hit and not t3:  # a thread we can name but nobody holds is a new conversation: register
+        hit = [d for d in bound if d.get("cwd") == CWD]
+    if len(hit) != 1:
+        return None
+    d = hit[0]
+    try:
+        client.session_call(d, "POST", "/v1/sessions/%s/beat" % d["session_id"], {}, timeout=8)
+        if conv and d.get("conversation") != conv:
+            client.session_call(d, "POST", "/v1/sessions/%s/meta" % d["session_id"], {"conversation": conv}, timeout=8)
+            d["conversation"] = conv
+    except Exception as e:
+        log("adopt", d.get("name"), "failed:", e)
+        return None
+    d["pid"] = AGENT_PID
+    client.write_session(d["name"], d)
+    state.update(sess=d, error="")
+    log("adopted", d["name"], d["session_id"])
+    _start_loop()
+    return d
 
 
 def _start_loop():
@@ -516,7 +568,7 @@ def board(a):
 # ------------------------------------------------------------------ MCP loop
 
 def _stop(*_):
-    end_session()
+    release()
     os._exit(0)
 
 
@@ -537,6 +589,11 @@ def main(kind=None):
         method, mid = m.get("method"), m.get("id")
         try:
             if method == "initialize":
+                if not state["sess"]:
+                    try:
+                        adopt()
+                    except Exception as e:
+                        log("adopt error:", e)
                 if want and not state["sess"]:
                     try:
                         register(want)
@@ -575,4 +632,4 @@ def main(kind=None):
             log("error handling", method, e)
             if mid is not None:
                 send({"jsonrpc": "2.0", "id": mid, "error": {"code": -32603, "message": str(e)}})
-    end_session()  # the agent exited: free the name now, not in two minutes
+    release()  # the agent exited: free the name now, not in two minutes

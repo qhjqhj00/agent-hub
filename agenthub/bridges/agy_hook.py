@@ -51,13 +51,20 @@ def _find_session(agent_arg: str, ev: dict[str, Any]) -> dict[str, Any] | None:
     if agent_arg:
         return read_session_file(agent_arg)
     cid = (ev.get("conversationId") or "").strip()
-    cwd = os.path.realpath(ev.get("cwd") or "") if ev.get("cwd") else ""
+    cwds: list[str] = []
+    if ev.get("cwd"):
+        cwds.append(os.path.realpath(ev["cwd"]))
+    for wp in ev.get("workspacePaths") or []:
+        if isinstance(wp, str) and wp:
+            rp = os.path.realpath(wp)
+            if rp not in cwds:
+                cwds.append(rp)
     candidates = list_session_files(kind="agy")
     if cid:
         for s in candidates:
             if s.get("conversation") == cid:
                 return s
-    if cwd:
+    for cwd in cwds:
         by_cwd = [s for s in candidates if s.get("cwd") and os.path.realpath(s["cwd"]) == cwd]
         if len(by_cwd) == 1:
             return by_cwd[0]
@@ -133,7 +140,9 @@ def handle_event(ev: dict[str, Any], agent_arg: str = "") -> dict[str, Any]:
             return {"injectSteps": [{"systemMessage": {"systemMessage": _wrap(agent_name, items)}}]}
 
         if name == "Stop":
-            # Strictly 0s non-blocking: report idle and let the turn finish cleanly.
+            # Strictly 0s non-blocking: also ensure T3 binding here because on turn 1
+            # hub_register() runs AFTER PreInvocation, so Stop is the first hook that sees the session file.
+            _ensure_t3_binding(sess, http, ev)
             try:
                 http.state("idle")
             except SessionAuthError:

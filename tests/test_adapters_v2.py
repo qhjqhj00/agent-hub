@@ -544,6 +544,10 @@ class AdaptersV2Tests(unittest.TestCase):
             "INSERT INTO orchestration_v2_projection_provider_threads VALUES (?, ?, ?)",
             ("p1", "t3-thread-42", json.dumps({"appThreadId": "t3-thread-42", "nativeThreadRef": {"driver": "antigravity", "nativeId": "cid-42", "strength": "strong"}})),
         )
+        conn.execute(
+            "INSERT INTO orchestration_v2_projection_provider_threads VALUES (?, ?, ?)",
+            ("p2", "t3-thread-99", json.dumps({"appThreadId": "t3-thread-99", "nativeThreadRef": {"driver": "antigravity", "nativeId": "cid-99", "strength": "strong"}})),
+        )
         conn.commit()
         conn.close()
 
@@ -570,6 +574,18 @@ class AdaptersV2Tests(unittest.TestCase):
         self.assertEqual(stop_out, {})
         self.assertLess(elapsed, 1.0)
         self.assertIn(("state", ("sa-agy", "idle")), self.hub.events)
+
+        # Verify Stop hook also binds meta.t3_thread when hub_register happened mid-turn (after PreInvocation)
+        sess2 = self.hub.register_direct("brain-agy", "agy", "/ws-brain", "bridge")
+        common.write_session_file(sess2)
+        stop_out2 = agy_hook.handle_event(
+            {"hookEventName": "Stop", "conversationId": "cid-99", "workspacePaths": ["/ws-brain"], "terminationReason": "NO_TOOL_CALL"},
+            agent_arg="",
+        )
+        self.assertEqual(stop_out2, {})
+        updated2 = common.read_session_file("brain-agy")
+        self.assertEqual((updated2 or {}).get("meta", {}).get("t3_thread"), "t3-thread-99")
+        self.assertEqual(self.hub.sessions[sess2["session_id"]]["meta"].get("t3_thread"), "t3-thread-99")
 
     # 4. t3_bridge.py (delivers with t3_thread; skips without t3_thread and NEVER marks delivered)
     def test_t3_bridge_delivery_and_skip_without_thread(self) -> None:

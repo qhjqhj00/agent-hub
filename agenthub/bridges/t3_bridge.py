@@ -49,7 +49,11 @@ def default_t3_send(thread_id: str, text: str, *, t3_bin: str = "t3", timeout: f
 
 
 def default_t3_status(thread_id: str, *, t3_bin: str = "t3", timeout: float = 10.0) -> str | None:
-    """Query `t3 thread show --json <thread_id>` and map to 'busy' | 'idle' | None."""
+    """Query `t3 thread show --json <thread_id>` and map to 'busy' | 'idle' | 'gone' | None.
+
+    Returns 'gone' ONLY when T3 explicitly reports the thread is deleted/missing or archived.
+    Transient failures (timeouts, server restarting) return None so the session stays alive.
+    """
     try:
         r = subprocess.run(
             [t3_bin, "thread", "show", "--json", "--messages", "0", thread_id],
@@ -58,9 +62,15 @@ def default_t3_status(thread_id: str, *, t3_bin: str = "t3", timeout: float = 10
             timeout=timeout,
         )
         if r.returncode != 0:
+            err = ((r.stderr or "") + (r.stdout or "")).lower()
+            if any(k in err for k in ("not found", "no thread", "does not exist", "unknown thread")):
+                return "gone"
             return None
         data = json.loads(r.stdout or "{}")
-        st = (data.get("thread") or {}).get("status") or ""
+        thread = data.get("thread") or {}
+        if thread.get("archived"):
+            return "gone"
+        st = thread.get("status") or ""
         if st in ("running", "starting", "preparing"):
             return "busy"
         if st in ("idle", "completed", "waiting", "interrupted", "failed", "cancelled"):
@@ -120,8 +130,17 @@ class T3SessionWorker:
                 return tid
         return ""
 
-    def sync_state(self, thread_id: str) -> None:
+    def sync_state(self, thread_id: str) -> bool:
+        """Sync T3 thread status to hub. Returns False if the thread is gone (deleted/archived)."""
         st = self.status_fn(thread_id)
+        if st == "gone":
+            _log(self.name, "t3 thread %s deleted/archived, ending hub session" % thread_id)
+            try:
+                self.http.end()
+            except Exception:
+                pass
+            remove_session_file(self.name)
+            return False
         if st and st != self._last_state:
             try:
                 self.http.state(st)
@@ -130,6 +149,7 @@ class T3SessionWorker:
                 raise
             except Exception as e:
                 _log(self.name, "state sync error:", e)
+        return True
 
     def poll_once(self) -> bool:
         """Execute one pull + deliver cycle. Returns False when worker should exit."""
@@ -138,7 +158,8 @@ class T3SessionWorker:
             # No deterministic T3 thread binding (e.g., standalone agy CLI): skip without pulling/delivering.
             return True
         try:
-            self.sync_state(tid)
+            if not self.sync_state(tid):
+                return False
             items = self.http.pull(wait=self.pull_wait)
         except SessionAuthError as e:
             _log(self.name, "session ended/rejected (%s), stopping worker" % e)

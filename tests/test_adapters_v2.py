@@ -623,6 +623,19 @@ class AdaptersV2Tests(unittest.TestCase):
         self.assertFalse(item_b["delivered"])
         self.assertEqual(item_b["lease_until"], 0.0)
 
+        # Case C: T3 thread deleted/archived ('gone') -> bridge calls /end and removes session file
+        sess_c = self.hub.register_direct("archived-agy", "agy", "/ws", "bridge", meta={"t3_thread": "t3-archived"})
+        common.write_session_file(sess_c)
+        w_c = t3_bridge.T3SessionWorker(
+            sess_c,
+            send_fn=lambda tid, txt: (True, "ok"),
+            status_fn=lambda tid: "gone",
+            pull_wait=0,
+        )
+        self.assertFalse(w_c.poll_once())
+        self.assertIn(("end", "archived-agy"), self.hub.events)
+        self.assertIsNone(common.read_session_file("archived-agy"))
+
     # 5. codex_bridge.py (real WS JSON-RPC handshake + turn/start + busy/idle state reporting)
     def test_codex_bridge_ws_delivery_and_state(self) -> None:
         mock_srv = MockCodexAppServer()

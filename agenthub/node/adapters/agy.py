@@ -21,10 +21,18 @@ from typing import Any
 from .base import Adapter, _short, mcp_command
 
 
-def _t3_mcp_configs() -> list[str]:
+def _t3_config_dirs() -> list[str]:
     t3_home = os.path.expanduser(os.environ.get("T3CODE_HOME") or "~/.t3")
     pattern = os.path.join(t3_home, "userdata", "providers", "antigravity", "*", "config")
-    return [os.path.join(d, "mcp_config.json") for d in sorted(glob.glob(pattern)) if os.path.isdir(d)]
+    return [d for d in sorted(glob.glob(pattern)) if os.path.isdir(d)]
+
+
+def _t3_mcp_configs() -> list[str]:
+    return [os.path.join(d, "mcp_config.json") for d in _t3_config_dirs()]
+
+
+def _t3_hook_configs() -> list[str]:
+    return [os.path.join(d, "hooks.json") for d in _t3_config_dirs()]
 
 
 def _cli_mcp_config() -> str:
@@ -97,13 +105,9 @@ def _ensure_git_exclude(workspace: str, rel_entry: str) -> None:
         pass
 
 
-def write_workspace_hooks(workspace: str, agenthub_cmd: list[str], agent_name: str = "") -> str:
-    """Write `<workspace>/.agents/hooks.json` with non-blocking PreInvocation and 0s Stop hooks."""
-    ws = os.path.abspath(os.path.expanduser(workspace))
-    hooks_path = os.path.join(ws, ".agents", "hooks.json")
+def _write_hooks_file(hooks_path: str, agenthub_cmd: list[str], agent_name: str = "") -> str:
     hook_argv = list(agenthub_cmd) + ["agy-hook"] + ([agent_name] if agent_name else [])
     hook_cmd = " ".join(shlex.quote(p) for p in hook_argv)
-
     data: dict[str, Any] = {}
     if os.path.isfile(hooks_path):
         try:
@@ -118,6 +122,14 @@ def write_workspace_hooks(workspace: str, agenthub_cmd: list[str], agent_name: s
     os.makedirs(os.path.dirname(hooks_path), exist_ok=True)
     with open(hooks_path, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2)
+    return hooks_path
+
+
+def write_workspace_hooks(workspace: str, agenthub_cmd: list[str], agent_name: str = "") -> str:
+    """Write `<workspace>/.agents/hooks.json` with non-blocking PreInvocation and 0s Stop hooks."""
+    ws = os.path.abspath(os.path.expanduser(workspace))
+    hooks_path = os.path.join(ws, ".agents", "hooks.json")
+    _write_hooks_file(hooks_path, agenthub_cmd, agent_name=agent_name)
     _ensure_git_exclude(ws, ".agents/hooks.json")
     return hooks_path
 
@@ -190,11 +202,13 @@ class Agy(Adapter):
         for path in targets:
             changed = _upsert_mcp_config(path, cmd)
             out.append(f"agy: {'wrote' if changed else 'kept'} MCP agent-hub in {_short(path)}")
+        # Install global T3 hooks.json so non-git workspaces (e.g. ~/workspace) also run agy-hook.
+        for hpath in _t3_hook_configs():
+            _write_hooks_file(hpath, agenthub_cmd)
+            out.append(f"agy: wrote global T3 hooks in {_short(hpath)}")
         if workspace:
             hp = write_workspace_hooks(workspace, agenthub_cmd, agent_name=agent_name)
             out.append(f"agy: wrote non-blocking PreInvocation/Stop hooks in {_short(hp)}")
-        else:
-            out.append("agy: pass --workspace <dir> to install .agents/hooks.json in a project")
         return out
 
     def teardown(self, workspace: str | None = None, **_: Any) -> list[str]:
